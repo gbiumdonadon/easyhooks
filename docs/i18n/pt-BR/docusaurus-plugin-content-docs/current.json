@@ -1,0 +1,22 @@
+{
+  "version.label": {
+    "message": "Próximo",
+    "description": "The label for version current"
+  },
+  "sidebar.tutorialSidebar.category.Início Rápido": {
+    "message": "Início Rápido",
+    "description": "The label for category Início Rápido in sidebar tutorialSidebar"
+  },
+  "sidebar.tutorialSidebar.category.API Reference": {
+    "message": "Referência da API",
+    "description": "The label for category API Reference in sidebar tutorialSidebar"
+  },
+  "sidebar.tutorialSidebar.category.WebSockets": {
+    "message": "WebSockets",
+    "description": "The label for category WebSockets in sidebar tutorialSidebar"
+  },
+  "sidebar.tutorialSidebar.category.Erros e DLQ": {
+    "message": "Erros e DLQ",
+    "description": "The label for category Erros e DLQ in sidebar tutorialSidebar"
+  }
+}

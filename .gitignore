@@ -1,0 +1,44 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.env
+.venv/
+venv/
+env/
+*.db
+*.sqlite3
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Docker volumes
+pgdata/
+kafka-logs/
+
+# Docusaurus
+docs/build/
+docs/.docusaurus/
+docs/node_modules/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# ai tools
+.cursor/
+.claude/

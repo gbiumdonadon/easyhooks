@@ -1,0 +1,19 @@
+---
+sidebar_position: 99
+title: Playground
+description: Simulate webhook sending with HMAC and track events in real-time via WebSocket.
+---
+
+import Playground from '@site/src/components/Playground';
+
+# Webhooks Playground
+
+Experience the complete flow: subscribe to the **WebSocket Gateway**, fire an event to the **Ingestor**, and see the payload arrive in the console — just like in production, but directly from the browser.
+
+:::warning Environment and CORS
+
+The `fetch` and `WebSocket` calls originate from the **browser**. The backend needs to accept the docs site origin (e.g., `http://localhost:3000` in development). If needed, configure CORS in FastAPI for `POST` methods, headers `Authorization`, `X-Webhook-Signature`, `X-Event-Id`, and for WebSocket upgrades.
+
+:::
+
+<Playground />

@@ -1,0 +1,8 @@
+{
+  "label": "WebSockets",
+  "position": 3,
+  "link": {
+    "type": "generated-index",
+    "description": "Real-time event delivery via WebSocket connections."
+  }
+}
