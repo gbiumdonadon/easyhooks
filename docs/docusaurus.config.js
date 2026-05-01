@@ -14,8 +14,8 @@ const config = {
   url: 'http://localhost',
   baseUrl: '/',
 
-  organizationName: 'easyhook',
-  projectName: 'easyhook',
+  organizationName: 'easyhooks',
+  projectName: 'easyhooks',
 
   onBrokenLinks: 'warn',
 
