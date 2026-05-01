@@ -84,8 +84,8 @@ Para Windows, use **WSL2** ou **Docker Desktop**. Os comandos abaixo são portá
 ### 1. Clonar e configurar ambiente
 
 ```bash
-git clone https://github.com/seuusuario/webhooks-platform.git
-cd webhooks-platform
+git clone https://github.com/seuusuario/easyhook.git
+cd easyhook
 
 # Copiar template de ambiente e configurar
 cp .env.example .env

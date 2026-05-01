@@ -14,8 +14,8 @@ const config = {
   url: 'http://localhost',
   baseUrl: '/',
 
-  organizationName: 'webhooks-platform',
-  projectName: 'webhooks-platform',
+  organizationName: 'easyhook',
+  projectName: 'easyhook',
 
   onBrokenLinks: 'warn',
 
