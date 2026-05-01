@@ -594,7 +594,6 @@ Este projeto é disponibilizado "como está" para fins de estudo e uso livre. Em
 
 - **Doc do produto:** <http://localhost:3001> (após `docker compose up -d docs`)
 - **Swagger UI:** <http://localhost:8000/docs>
-- **Specs originais:** [`work/`](work/) — uma `.md` por grupo (1-6) descrevendo o requisito.
 
 ---
 

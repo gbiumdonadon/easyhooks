@@ -331,7 +331,6 @@ This project is provided "as is" for study and free use purposes. While it imple
 
 - **Product Documentation:** <http://localhost:3001> (after `docker compose up -d docs`)
 - **Swagger UI:** <http://localhost:8000/docs>
-- **Original Specifications:** [`work/`](work/) — one `.md` per group (1-6) describing requirements.
 
 ---
 
