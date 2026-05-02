@@ -3,10 +3,10 @@ id: intro
 title: Visão Geral
 slug: /
 sidebar_position: 0
-description: Visão geral da Webhooks Platform — ingestão multi-tenant, processamento idempotente e distribuição em tempo real.
+description: Visão geral da Easyhooks — ingestão multi-tenant, processamento idempotente e distribuição em tempo real.
 ---
 
-# Webhooks Platform
+# Easyhooks
 
 Plataforma multi-tenant de **ingestão, processamento idempotente e distribuição em tempo real** de webhooks. Pensada para receber eventos de múltiplos clientes, garantir entrega *at-least-once* (com exactly-once interno), e empurrar os eventos processados para frontends e sistemas downstream via WebSocket.
 

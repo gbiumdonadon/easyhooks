@@ -11,6 +11,7 @@ from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from redis.asyncio import Redis
 
 from src.config import settings
+from src.observability import metrics, tracing
 from src.services.event_streams import publish_tenant_event
 from src.services.webhook_processor import process_record
 
@@ -55,6 +56,16 @@ def make_redis_streams_handler(redis):
 
 
 async def run(business_handler=None) -> None:
+    tracing.setup_tracing(
+        service_name=f"{settings.OTEL_SERVICE_NAME}-worker",
+        otlp_endpoint=settings.OTEL_EXPORTER_OTLP_ENDPOINT,
+        enabled=settings.TRACING_ENABLED,
+        sample_rate=settings.TRACING_SAMPLE_RATE,
+    )
+    
+    if settings.TRACING_ENABLED:
+        tracing.instrument_redis()
+    
     consumer = AIOKafkaConsumer(
         settings.KAFKA_WEBHOOK_TOPIC,
         bootstrap_servers=settings.KAFKA_BOOTSTRAP_SERVERS,
@@ -105,6 +116,11 @@ async def run(business_handler=None) -> None:
             for _tp, records in batch.items():
                 for record in records:
                     try:
+                        metrics.kafka_consume_total.labels(
+                            topic=settings.KAFKA_WEBHOOK_TOPIC,
+                            consumer_group=settings.KAFKA_CONSUMER_GROUP,
+                        ).inc()
+                        
                         await process_record(
                             record,
                             redis=redis,

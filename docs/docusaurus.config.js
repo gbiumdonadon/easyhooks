@@ -3,7 +3,7 @@ import {themes as prismThemes} from 'prism-react-renderer';
 
 /** @type {import('@docusaurus/types').Config} */
 const config = {
-  title: 'Webhooks Platform',
+  title: 'Easyhooks',
   tagline: 'Multi-tenant real-time webhook platform',
   favicon: 'img/favicon.ico',
 
@@ -68,7 +68,7 @@ const config = {
         respectPrefersColorScheme: true,
       },
       navbar: {
-        title: 'Webhooks Platform',
+        title: 'Easyhooks',
         items: [
           {
             type: 'docSidebar',

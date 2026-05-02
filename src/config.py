@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     STREAM_MAX_LEN: int = 1000
     STREAM_HISTORY_COUNT: int = 50
     CORS_ORIGINS: str = "http://localhost:3001,http://localhost:3000"
+    OTEL_EXPORTER_OTLP_ENDPOINT: str = "http://jaeger:4317"
+    OTEL_SERVICE_NAME: str = "easyhooks"
+    METRICS_ENABLED: bool = True
+    TRACING_ENABLED: bool = True
+    TRACING_SAMPLE_RATE: float = 1.0
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 

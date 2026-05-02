@@ -42,3 +42,7 @@ Thumbs.db
 # ai tools
 .cursor/
 .claude/
+
+# Load testing — tenant credentials and generated reports must never be committed
+load_tests/.tenant_pool.json
+load_tests/reports/
