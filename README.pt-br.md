@@ -1,4 +1,4 @@
-# Webhooks Platform
+# Easyhooks
 
 [🇺🇸 English version](README.md)
 
@@ -15,6 +15,7 @@ Plataforma multi-tenant de **ingestão, processamento idempotente e distribuiç�
 - [Pré-requisitos](#pré-requisitos)
 - [Quick Start (5 minutos)](#quick-start-5-minutos)
 - [URLs e portas](#urls-e-portas)
+- [Observabilidade](#observabilidade)
 - [Estrutura de pastas](#estrutura-de-pastas)
 - [Comandos úteis](#comandos-úteis)
 - [Variáveis de ambiente](#variáveis-de-ambiente)
@@ -34,6 +35,7 @@ Plataforma multi-tenant de **ingestão, processamento idempotente e distribuiç�
 flowchart LR
     Admin[Admin] -->|"POST /admin/tenants"| API[FastAPI app]
     Cliente[Cliente] -->|"POST /v1/webhooks/:id<br/>+ HMAC"| API
+    API -->|"http_requests_total\nhttp_request_duration_seconds"| Prometheus[(Prometheus)]
     API -->|"webhooks.inbound"| Kafka[(Kafka)]
     Kafka --> Worker[Worker]
     Worker -->|"PUBLISH<br/>tenant_events:id"| Redis[(Redis Pub/Sub)]
@@ -42,14 +44,17 @@ flowchart LR
     Cliente -->|"WS /ws/events/:id"| API
     Redis --> API
     API -->|"send_text"| Cliente
+    Prometheus --> Grafana[Grafana]
+    Locust[Locust] -->|"load test"| API
 ```
 
-- **`app`** — FastAPI: Admin API, ingestor de webhooks, emissor de tokens WS, endpoint WebSocket.
+- **`app`** — FastAPI: Admin API, ingestor de webhooks, emissor de tokens WS, endpoint WebSocket, middleware de métricas HTTP.
 - **`worker`** — Consumer Kafka dedicado: idempotência (Redis), retry exponencial, DLQ e pub/sub.
 - **`docs`** — Site Docusaurus (Nginx servindo estáticos).
 - **`db`** — Postgres 16 (tenants, admins).
 - **`redis`** — Redis 7 (cache de credenciais, locks de idempotência, pub/sub).
 - **`kafka`** — Kafka 3.7 (KRaft, single-broker para dev).
+- **`prometheus`** / **`grafana`** / **`jaeger`** — Stack de observabilidade completa.
 
 ---
 
@@ -63,6 +68,8 @@ flowchart LR
 | Mensageria | Apache Kafka (`aiokafka`) |
 | Cache / Pub-Sub | Redis 7 |
 | Banco | PostgreSQL 16 |
+| Observabilidade | Prometheus + Grafana + Jaeger (OpenTelemetry) |
+| Testes de Carga | Locust (cenários HTTP + WebSocket) |
 | Testes | `pytest`, `pytest-asyncio`, `httpx`, `httpx-ws`, `testcontainers[kafka]` |
 | Docs | Docusaurus 3 (Node 20 build → Nginx Alpine runtime) |
 | Infra | Docker Compose |
@@ -95,6 +102,7 @@ cp .env.example .env
 - `POSTGRES_PASSWORD`
 - `ADMIN_SEED_TOKEN`
 - `APP_SECRET_KEY`
+- `GRAFANA_ADMIN_PASSWORD`
 
 Gerar valores aleatórios seguros:
 
@@ -184,10 +192,127 @@ Para detalhes (HMAC, WebSocket, DLQ, exemplos em outras linguagens) veja a doc e
 | API (Swagger UI) | <http://localhost:8000/docs> | 8000 | OpenAPI interativo |
 | API (ReDoc) | <http://localhost:8000/redoc> | 8000 | Documentação alternativa |
 | API root | <http://localhost:8000/> | 8000 | FastAPI |
+| Métricas | <http://localhost:8000/metrics> | 8000 | Métricas Prometheus |
 | Documentação | <http://localhost:3001> | 80 | Site Docusaurus (Nginx) |
+| **Grafana** | <http://localhost:3000> | 3000 | Dashboards (credenciais do `.env`) |
+| **Prometheus** | <http://localhost:9090> | 9090 | Métricas & queries |
+| **Jaeger** | <http://localhost:16686> | 16686 | Tracing distribuído |
 | Postgres | localhost:5432 | 5432 | usuário do .env |
 | Redis | localhost:6379 | 6379 | sem auth (dev) |
 | Kafka | localhost:9092 | 9092 | listener PLAINTEXT |
+
+---
+
+## Observabilidade
+
+O EasyHooks inclui observabilidade completa com **métricas**, **dashboards** e **tracing distribuído**.
+
+### Acesso Rápido
+
+- **Grafana**: <http://localhost:3000> (credenciais: `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD` do `.env`) — Dashboards pré-configurados
+- **Prometheus**: <http://localhost:9090> — Métricas e queries
+- **Jaeger**: <http://localhost:16686> — Interface de tracing distribuído
+
+### Métricas Principais
+
+#### 1. Kafka Consumer Lag ⚠️ **MAIS CRÍTICA**
+
+Mostra quantas mensagens estão aguardando processamento.
+
+```promql
+kafka_consumergroup_lag{consumergroup="webhook-workers"}
+```
+
+- **Saudável**: < 100 mensagens
+- **Atenção**: 100-500 mensagens
+- **Crítico**: > 1000 mensagens
+
+**Se o lag estiver alto:** Escale o worker horizontalmente ou investigue gargalos no processamento.
+
+#### 2. Taxa de Erro (DLQ)
+
+Porcentagem de webhooks que falharam após todas as tentativas.
+
+```promql
+rate(webhook_dlq_total[5m]) / rate(kafka_consume_total[5m])
+```
+
+- **Saudável**: < 1%
+- **Atenção**: 1-5%
+- **Crítico**: > 5%
+
+#### 3. Duração de Processamento
+
+Tempo para processar cada webhook (p95).
+
+```promql
+histogram_quantile(0.95, rate(webhook_processing_duration_seconds_bucket[5m]))
+```
+
+- **Bom**: < 200ms
+- **Aceitável**: 200-500ms
+- **Lento**: > 500ms
+
+#### 4. Taxa de Requisições HTTP
+
+Total de requisições recebidas pela API, por endpoint e status code.
+
+```promql
+sum(rate(http_requests_total[1m])) by (endpoint, status_code)
+```
+
+#### 5. Conexões WebSocket Ativas
+
+Conexões em tempo real por tenant.
+
+```promql
+websocket_connections_active
+```
+
+### Dashboards do Grafana
+
+Três dashboards pré-configurados são provisionados automaticamente:
+
+1. **EasyHooks Overview** — Saúde geral do sistema: RPS de webhooks, latência p95, conexões WebSocket, taxa de erro DLQ
+2. **Kafka Metrics** — Consumer lag, offsets, throughput
+3. **EasyHooks Load Test** — Taxa de requisições HTTP por endpoint, percentis de latência (p50/p95/p99), taxa de erros por status code, contador total de requisições
+
+### Tracing Distribuído
+
+Visualize fluxos completos de requisição: API → Kafka → Worker → Redis → WebSocket:
+
+1. Abra o Jaeger: <http://localhost:16686>
+2. Selecione o serviço: `easyhooks` ou `easyhooks-worker`
+3. Clique em "Find Traces"
+4. Explore a visualização em cascata para análise de latência
+
+**Exemplo de spans de trace:**
+- `webhook.ingest` — API recebe webhook
+- `webhook.validate_hmac` — Validação de assinatura HMAC
+- `webhook.produce_kafka` — Envio para Kafka
+- `webhook.process` — Processamento no worker
+- `webhook.idempotency_check` — Detecção de duplicatas
+- `webhook.publish_redis` — Distribuição pub/sub
+- `websocket.send` — Entrega ao cliente
+
+### Troubleshooting com Observabilidade
+
+| Problema | Verificar |
+| --- | --- |
+| Webhooks lentos | Traces no Jaeger → Encontrar span mais longo |
+| Taxa de erro alta | Dashboard DLQ no Grafana → Tipos de erro |
+| Worker atrasado | Dashboard Kafka no Grafana → Consumer lag |
+| Cliente não recebendo | Jaeger → Procurar span `websocket.send` ausente |
+
+### Recomendações para Produção
+
+1. **Configure alertas** para métricas críticas (lag, taxa de erro)
+2. **Reduza sampling rate**: `TRACING_SAMPLE_RATE=0.1` (10%)
+3. **Use armazenamento persistente** para Prometheus/Jaeger
+4. **Monitore tendências** diariamente, não apenas valores atuais
+5. **Correlacione** métricas com deploys e incidentes
+
+Para documentação detalhada, veja <http://localhost:3001/observability/monitoring>
 
 ---
 
@@ -203,6 +328,11 @@ Para detalhes (HMAC, WebSocket, DLQ, exemplos em outras linguagens) veja a doc e
 │   ├── redis_client.py        # Redis async client + DI
 │   ├── security.py            # Hash/verify secret + HMAC
 │   ├── dependencies.py        # Auth dependencies (admin, tenant)
+│   ├── middleware/            # Middlewares FastAPI
+│   │   └── metrics_middleware.py  # HTTP metrics → Prometheus
+│   ├── observability/         # Prometheus metrics + tracing
+│   │   ├── metrics.py         # Counters, histograms, gauges
+│   │   └── tracing.py         # OpenTelemetry / Jaeger
 │   ├── models/                # SQLAlchemy models
 │   ├── schemas/               # Pydantic schemas
 │   ├── routers/               # FastAPI routers
@@ -217,20 +347,33 @@ Para detalhes (HMAC, WebSocket, DLQ, exemplos em outras linguagens) veja a doc e
 │       ├── kafka_producer.py
 │       ├── pubsub.py
 │       └── ws_token.py
-├── tests/                     # pytest (29 testes em 6 grupos)
-├── alembic/                   # Migrations
+├── load_tests/                # Testes de carga (Locust)
+│   ├── locustfile.py          # Usuários WebhookUser + WebSocketUser
+│   ├── config.py              # Configurações via variáveis de ambiente
+│   ├── scenarios/             # Cenários: baseline, throughput, stress...
+│   ├── utils/                 # tenant_factory, hmac_helpers, metrics_collector
+│   ├── scripts/               # prepare_system (.sh/.ps1)
+│   └── reports/               # Relatórios exportados
+├── observability/             # Configuração da stack de observabilidade
+│   ├── prometheus/
+│   │   └── prometheus.yml     # Scrape configs
+│   └── grafana/
+│       ├── provisioning/      # Datasources + dashboards automáticos
+│       └── dashboards/        # JSONs: Overview, Kafka, Load Test
+├── tests/                     # pytest (6 grupos)
+├── migrations/                # Alembic migrations
 ├── scripts/
 │   └── seed_admin.py          # Idempotente: cria superadmin
 ├── docs/                      # Site Docusaurus
-│   ├── docs/                  # Conteúdo .md (intro + 4 categorias)
+│   ├── docs/                  # Conteúdo .md
 │   ├── docusaurus.config.js
 │   ├── sidebars.js
 │   ├── package.json
 │   └── Dockerfile             # Multi-stage build → Nginx
-├── work/                      # Specs originais dos grupos 1-6
-├── docker-compose.yml
+├── docker-compose.yml         # Stack completa (app + infra + observabilidade)
 ├── Dockerfile                 # Imagem Python (app + worker)
 ├── pyproject.toml
+├── .env.example               # Template de variáveis de ambiente
 └── README.md
 ```
 
@@ -310,7 +453,7 @@ Todas as variáveis podem ser configuradas via arquivo `.env` na raiz do projeto
 | --- | --- | --- |
 | `DATABASE_URL` | String de conexão PostgreSQL | `postgresql+asyncpg://webhooks:senha@db:5432/webhooks` |
 | `POSTGRES_USER` | Usuário PostgreSQL | `webhooks` |
-| `POSTGRES_PASSWORD` | Senha PostgreSQL | `changeme123` |
+| `POSTGRES_PASSWORD` | Senha PostgreSQL | *(gerada)* |
 | `POSTGRES_DB` | Nome do banco PostgreSQL | `webhooks` |
 | `REDIS_URL` | String de conexão Redis | `redis://redis:6379/0` |
 | `KAFKA_BOOTSTRAP_SERVERS` | Endereços dos brokers Kafka | `kafka:9092` |
@@ -320,8 +463,8 @@ Todas as variáveis podem ser configuradas via arquivo `.env` na raiz do projeto
 | `WORKER_MAX_RETRIES` | Máximo de tentativas antes da DLQ | `3` |
 | `WORKER_BACKOFF_BASE_MS` | Base do backoff exponencial (ms) | `100` |
 | `IDEMPOTENCY_TTL_SECONDS` | TTL do lock de idempotência | `86400` |
-| `ADMIN_SEED_TOKEN` | Token bootstrap do admin (DEVE MUDAR) | `change-this-to-a-secure-random-token` |
-| `APP_SECRET_KEY` | Chave para assinar tokens WS (DEVE MUDAR) | `change-this-to-a-secure-random-key` |
+| `ADMIN_SEED_TOKEN` | Token bootstrap do admin **(DEVE MUDAR)** | *(gerado)* |
+| `APP_SECRET_KEY` | Chave para assinar tokens WS **(DEVE MUDAR)** | *(gerada)* |
 | `WS_TOKEN_TTL_SECONDS` | TTL do token de WebSocket | `300` |
 | `TENANT_EVENTS_CHANNEL_PREFIX` | Prefixo dos canais Pub/Sub | `tenant_events:` |
 | `TENANT_EVENTS_STREAM_PREFIX` | Prefixo dos streams Redis | `stream:tenant:` |
@@ -329,8 +472,19 @@ Todas as variáveis podem ser configuradas via arquivo `.env` na raiz do projeto
 | `STREAM_HISTORY_COUNT` | Contagem de histórico na conexão | `50` |
 | `CORS_ORIGINS` | Origens CORS permitidas | `http://localhost:3001,http://localhost:3000` |
 | `SECRET_KEY_BYTES` | Entropia do secret gerado para tenant | `32` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Endpoint OTLP OpenTelemetry | `http://jaeger:4317` |
+| `OTEL_SERVICE_NAME` | Nome do serviço para tracing | `easyhooks` |
+| `METRICS_ENABLED` | Habilitar métricas Prometheus | `true` |
+| `TRACING_ENABLED` | Habilitar tracing distribuído | `true` |
+| `TRACING_SAMPLE_RATE` | Taxa de amostragem de tracing (0.0–1.0) | `1.0` |
+| `GRAFANA_ADMIN_USER` | Usuário admin do Grafana | `admin` |
+| `GRAFANA_ADMIN_PASSWORD` | Senha admin do Grafana **(DEVE MUDAR)** | *(gerada)* |
+| `GRAFANA_SERVER_ROOT_URL` | URL pública raiz do Grafana | `http://localhost:3000` |
+| `UVICORN_WORKERS` | Processos worker do Uvicorn | `1` (use o nº de CPUs em produção) |
+| `LOADTEST_ADMIN_TOKEN` | Token admin para testes de carga (igual ao `ADMIN_SEED_TOKEN`) | *(mesmo que ADMIN_SEED_TOKEN)* |
+| `LOADTEST_API_BASE_URL` | URL alvo dos testes de carga | `http://localhost:8000` |
 
-> **Produção:** sempre defina `ADMIN_SEED_TOKEN` e `APP_SECRET_KEY` via secret manager. Rotacione antes de promover.
+> **Produção:** sempre defina `ADMIN_SEED_TOKEN`, `APP_SECRET_KEY` e `GRAFANA_ADMIN_PASSWORD` via secret manager. Rotacione antes de promover. Reduza `TRACING_SAMPLE_RATE` para 0.1–0.2 para diminuir overhead.
 
 ---
 
@@ -375,6 +529,45 @@ uvicorn src.main:app --reload --port 8000
 # Terminal 2: Worker
 python -m src.worker
 ```
+
+---
+
+## Testes de Carga
+
+O EasyHooks inclui uma suite completa de testes de carga com Locust em `load_tests/`.
+
+### Execução Rápida
+
+```bash
+# 1. Instalar dependências
+pip install -r load_tests/requirements.txt
+
+# 2. Criar pool de tenants (requer o stack rodando)
+cd load_tests
+python utils/tenant_factory.py --create --count 50
+
+# 3. Teste rápido headless (60s, 20 usuários)
+python -m locust -f locustfile.py --headless -u 20 -r 5 --run-time 60s --host http://localhost:8000
+
+# 4. Ou abrir a Web UI em http://localhost:8089
+python -m locust -f locustfile.py --host http://localhost:8000
+```
+
+### Cenários Disponíveis
+
+| Cenário | Arquivo | Objetivo |
+| --- | --- | --- |
+| Baseline | `scenarios/baseline.py` | Estabelecer baseline em carga normal |
+| Throughput | `scenarios/throughput.py` | Taxa máxima de ingestão de webhooks |
+| WebSocket Scale | `scenarios/websocket_scale.py` | Conexões WS simultâneas |
+| Multi-Tenant | `scenarios/multi_tenant.py` | Isolamento por tenant sob carga |
+| Stress | `scenarios/stress.py` | Encontrar ponto de saturação |
+
+### Visualização no Grafana
+
+Com um teste em andamento, abra o dashboard **EasyHooks Load Test** em <http://localhost:3000/d/loadtest-overview> para ver RPS por endpoint, percentis de latência e taxa de erros em tempo real.
+
+Veja `load_tests/README.md` para o guia completo incluindo testes distribuídos com múltiplos workers.
 
 ---
 

@@ -41,6 +41,15 @@ const sidebars = {
         'errors/retentativas-dlq',
       ],
     },
+    {
+      type: 'category',
+      label: 'Observabilidade',
+      collapsed: false,
+      items: [
+        'observability/monitoring',
+        'observability/tracing',
+      ],
+    },
     'playground',
   ],
 };

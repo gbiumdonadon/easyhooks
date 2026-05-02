@@ -7,7 +7,7 @@ description: Como obter o ADMIN_SEED_TOKEN e gerar credenciais (API_KEY/SECRET) 
 
 # Autenticação
 
-A Webhooks Platform usa um modelo de **dois níveis de credenciais**:
+A Easyhooks usa um modelo de **dois níveis de credenciais**:
 
 1. **Admin** — administradores criam e gerenciam tenants. A autenticação é feita via **Bearer token** definido pela variável `ADMIN_SEED_TOKEN`.
 2. **Tenant** — cada tenant recebe um `tenant_id` (UUID) e um `secret_key` (string opaca de alta entropia) que é usado para autenticar requisições no ingestor (HMAC ou Bearer) e para emitir tokens de WebSocket.

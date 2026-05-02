@@ -3,10 +3,10 @@ id: intro
 title: Overview
 slug: /
 sidebar_position: 0
-description: Overview of Webhooks Platform — multi-tenant ingestion, idempotent processing, and real-time distribution.
+description: Overview of Easyhooks — multi-tenant ingestion, idempotent processing, and real-time distribution.
 ---
 
-# Webhooks Platform
+# Easyhooks
 
 Multi-tenant platform for **ingestion, idempotent processing, and real-time distribution** of webhooks. Designed to receive events from multiple clients, guarantee *at-least-once* delivery (with internal exactly-once), and push processed events to frontends and downstream systems via WebSocket.
 
