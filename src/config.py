@@ -4,6 +4,7 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     DATABASE_URL: str
     REDIS_URL: str = "redis://localhost:6379/0"
+    REDIS_POOL_SIZE: int = 100
     ADMIN_SEED_TOKEN: str
     SECRET_KEY_BYTES: int = 32
     KAFKA_BOOTSTRAP_SERVERS: str = "localhost:9092"
@@ -15,10 +16,12 @@ class Settings(BaseSettings):
     IDEMPOTENCY_TTL_SECONDS: int = 86400
     APP_SECRET_KEY: str
     WS_TOKEN_TTL_SECONDS: int = 300
+    AUTH_SESSION_TTL_SECONDS: int = 300
     TENANT_EVENTS_CHANNEL_PREFIX: str = "tenant_events:"
     TENANT_EVENTS_STREAM_PREFIX: str = "stream:tenant:"
     STREAM_MAX_LEN: int = 1000
     STREAM_HISTORY_COUNT: int = 50
+    WS_USE_FANOUT: bool = True
     CORS_ORIGINS: str = "http://localhost:3001,http://localhost:3000"
     OTEL_EXPORTER_OTLP_ENDPOINT: str = "http://jaeger:4317"
     OTEL_SERVICE_NAME: str = "easyhooks"

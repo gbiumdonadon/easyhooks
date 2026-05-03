@@ -2,29 +2,37 @@
 import json
 import sys
 import argparse
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 import httpx
 
-sys.path.append(str(Path(__file__).parent.parent.parent))
-from load_tests.config import settings
+# Ensure the load_tests directory is on sys.path so `config` can be imported
+# regardless of the working directory (local dev, Docker container, CI/CD).
+_load_tests_dir = Path(__file__).parent.parent
+if str(_load_tests_dir) not in sys.path:
+    sys.path.insert(0, str(_load_tests_dir))
+
+from config import settings  # noqa: E402 — path manipulation required above
 
 
 class TenantFactory:
     """Factory for creating and managing test tenants."""
-    
+
     def __init__(self, api_base_url: str, admin_token: str, pool_file: str):
         self.api_base_url = api_base_url
         self.admin_token = admin_token
         self.pool_file = Path(pool_file)
-        self.tenants = []
-    
+        self.tenants: list[dict] = []
+        self._lock = threading.Lock()
+
     def create_tenant(self, name: str) -> dict:
         """
-        Create a single tenant via API.
-        
+        Create a single tenant via the application API.
+
         Args:
             name: Tenant name
-            
+
         Returns:
             Dict with tenant_id and secret_key
         """
@@ -32,39 +40,56 @@ class TenantFactory:
             f"{self.api_base_url}/admin/tenants",
             headers={
                 "Authorization": f"Bearer {self.admin_token}",
-                "Content-Type": "application/json"
+                "Content-Type": "application/json",
             },
             json={"name": name},
-            timeout=10.0
+            timeout=10.0,
         )
         response.raise_for_status()
         return response.json()
-    
-    def create_tenants(self, count: int, prefix: str = "loadtest") -> list[dict]:
+
+    def create_tenants(self, count: int, prefix: str = "loadtest", max_workers: int = 10) -> list[dict]:
         """
-        Create multiple tenants.
-        
+        Create multiple tenants in parallel via the application API.
+
+        Uses a thread pool to run concurrent POST /admin/tenants requests,
+        reducing setup time from O(count * latency) to O(count / workers * latency).
+
         Args:
-            count: Number of tenants to create
-            prefix: Name prefix for tenants
-            
+            count:       Number of tenants to create.
+            prefix:      Name prefix for tenants (e.g. "loadtest-tenant-0001").
+            max_workers: Maximum concurrent API requests (default: 10).
+
         Returns:
-            List of tenant dicts
+            List of tenant dicts with tenant_id and secret_key.
         """
-        print(f"Creating {count} test tenants...")
-        tenants = []
-        
-        for i in range(count):
-            name = f"{prefix}-tenant-{i:04d}"
-            try:
-                tenant = self.create_tenant(name)
-                tenants.append(tenant)
-                print(f"  [OK] Created {name}: {tenant['tenant_id']}")
-            except Exception as e:
-                print(f"  [FAIL] Failed to create {name}: {e}")
-        
-        self.tenants = tenants
-        return tenants
+        print(f"[TenantFactory] Creating {count} test tenants via API (concurrency={max_workers})...")
+
+        names = [f"{prefix}-tenant-{i:04d}" for i in range(count)]
+        results: list[dict] = []
+        failures = 0
+
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            future_to_name = {pool.submit(self.create_tenant, name): name for name in names}
+
+            for future in as_completed(future_to_name):
+                name = future_to_name[future]
+                try:
+                    tenant = future.result()
+                    with self._lock:
+                        results.append(tenant)
+                    print(f"  [OK] {name}: {tenant['tenant_id']}")
+                except Exception as exc:
+                    failures += 1
+                    print(f"  [FAIL] {name}: {exc}")
+
+        if failures:
+            print(f"\n[TenantFactory] Warning: {failures}/{count} tenants failed to create.")
+
+        # Sort by name so the pool order is deterministic
+        results.sort(key=lambda t: t.get("name", ""))
+        self.tenants = results
+        return results
     
     def save_pool(self):
         """Save tenant pool to JSON file."""
@@ -176,6 +201,13 @@ def main():
     if args.create:
         factory.create_tenants(args.count, args.prefix)
         factory.save_pool()
+
+        if not factory.tenants:
+            print("\n[FATAL] Nenhum tenant foi criado — abortando.")
+            print("Verifique LOADTEST_ADMIN_TOKEN e LOADTEST_API_BASE_URL.")
+            sys.exit(1)
+
+        print(f"\n[OK] Pool pronta com {len(factory.tenants)} tenants.")
     elif args.list:
         tenants = factory.load_pool()
         print(f"\nTenant pool ({len(tenants)} tenants):")

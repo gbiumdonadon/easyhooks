@@ -87,7 +87,7 @@ const config = {
             position: 'right',
           },
           {
-            href: 'https://github.com/',
+            href: 'https://github.com/gbiumdonadon/easyhooks',
             label: 'GitHub',
             position: 'right',
           },

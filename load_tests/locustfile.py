@@ -4,10 +4,24 @@ Main Locust load testing file for EasyHooks.
 This file contains the primary user classes for load testing:
 - WebhookUser: Simulates clients sending webhooks via HTTP
 - WebSocketUser: Simulates clients listening for events via WebSocket
+
+Tenant pool lifecycle
+---------------------
+Tenants are created via the application's own API before any webhook is
+dispatched.  The module-level `_pool_ready` Event coordinates this:
+
+- Master / standalone: creates tenants in `on_locust_init` then sets the event.
+- Workers (distributed mode): poll the shared pool file in `on_locust_init`
+  until the master writes it, then set the event locally.
+- Both `WebhookUser.on_start` and `WebSocketUser.on_start` block on
+  `_pool_ready.wait()` before acquiring a tenant, guaranteeing that no
+  webhook request is sent until the pool is fully populated.
 """
 import json
-import uuid
+import sys
+import threading
 import time
+import uuid
 from locust import HttpUser, task, between, events
 from websocket import create_connection, WebSocketTimeoutException, WebSocketException
 
@@ -16,27 +30,65 @@ from utils.hmac_helpers import sign_webhook
 from utils.metrics_collector import collector
 from config import settings
 
+# Signals that the tenant pool is populated and users may start sending requests.
+# Set by on_locust_init on master/standalone; workers block until the pool file
+# appears on the shared volume and then set it locally.
+_pool_ready = threading.Event()
+
+# How long (seconds) on_start waits for the pool before raising.
+_POOL_WAIT_TIMEOUT = 120
+
+
+def _abort_locust(environment, reason: str) -> None:
+    """
+    Stop Locust immediately with a fatal error message.
+
+    Called when a pre-condition for the test cannot be met (e.g. tenant
+    creation failed).  Uses the runner's quit() when available, otherwise
+    falls back to sys.exit so the process always terminates with a non-zero
+    exit code, preventing docker-compose from marking the init step as
+    successful.
+    """
+    print("\n" + "!" * 72)
+    print("[FATAL] Locust abortado — pré-condição não atendida:")
+    print(f"  {reason}")
+    print("!" * 72 + "\n")
+
+    runner = getattr(environment, "runner", None)
+    if runner is not None:
+        try:
+            runner.quit()
+            return
+        except Exception:
+            pass
+
+    sys.exit(1)
+
 
 class WebhookUser(HttpUser):
     """
     User that sends webhook events via HTTP POST.
-    
+
     Simulates external systems posting webhook events to the platform.
     Each user is assigned a tenant from the pool.
     """
-    
+
     wait_time = between(0.1, 0.5)
-    
+
     def on_start(self):
-        """Initialize user with tenant credentials."""
-        try:
-            self.tenant_id, self.secret = get_tenant_from_pool()
-            self.event_counter = 0
-            print(f"WebhookUser started with tenant: {self.tenant_id}")
-        except Exception as e:
-            print(f"Failed to get tenant from pool: {e}")
-            print("Make sure to run: python load_tests/utils/tenant_factory.py --create --count 50")
-            raise
+        """
+        Initialize user with tenant credentials.
+
+        Blocks until the tenant pool is ready (created via the app API)
+        before acquiring a tenant, ensuring no webhook is sent prematurely.
+        """
+        if not _pool_ready.wait(timeout=_POOL_WAIT_TIMEOUT):
+            raise RuntimeError(
+                f"Tenant pool not ready after {_POOL_WAIT_TIMEOUT}s. "
+                "Check LOADTEST_ADMIN_TOKEN and LOADTEST_API_BASE_URL."
+            )
+        self.tenant_id, self.secret = get_tenant_from_pool()
+        self.event_counter = 0
     
     @task(10)
     def send_webhook(self):
@@ -102,25 +154,30 @@ class WebhookUser(HttpUser):
 class WebSocketUser(HttpUser):
     """
     User that maintains a WebSocket connection to receive events.
-    
+
     Simulates clients listening for real-time webhook delivery.
     Each user maintains one persistent WebSocket connection.
     """
-    
+
     wait_time = between(1, 5)
-    
+
     def on_start(self):
-        """Initialize user with tenant credentials and connect WebSocket."""
-        try:
-            self.tenant_id, self.secret = get_tenant_from_pool()
-            self.ws = None
-            self.connected = False
-            self.messages_received = 0
-            self.connect_websocket()
-            print(f"WebSocketUser connected for tenant: {self.tenant_id}")
-        except Exception as e:
-            print(f"Failed to start WebSocketUser: {e}")
-            raise
+        """
+        Initialize user with tenant credentials and connect WebSocket.
+
+        Blocks until the tenant pool is ready before acquiring a tenant,
+        ensuring no connection is attempted before tenants exist in the API.
+        """
+        if not _pool_ready.wait(timeout=_POOL_WAIT_TIMEOUT):
+            raise RuntimeError(
+                f"Tenant pool not ready after {_POOL_WAIT_TIMEOUT}s. "
+                "Check LOADTEST_ADMIN_TOKEN and LOADTEST_API_BASE_URL."
+            )
+        self.tenant_id, self.secret = get_tenant_from_pool()
+        self.ws = None
+        self.connected = False
+        self.messages_received = 0
+        self.connect_websocket()
     
     def connect_websocket(self):
         """Connect to WebSocket endpoint."""
@@ -267,27 +324,114 @@ def on_test_stop(environment, **kwargs):
         print(f"Failed to export metrics: {e}")
 
 
+def _wait_for_pool_file(max_wait: int = 120) -> bool:
+    """
+    Poll the pool file until it contains at least one tenant or timeout.
+
+    Used by worker processes in distributed mode: the master writes the pool
+    file after creation, and workers wait for it to appear on the shared volume.
+
+    Returns True when the pool is populated, False on timeout.
+    """
+    from utils.tenant_factory import load_tenant_pool
+
+    interval = 2
+    elapsed = 0
+    while elapsed < max_wait:
+        try:
+            if load_tenant_pool():
+                return True
+        except Exception:
+            pass
+        time.sleep(interval)
+        elapsed += interval
+    return False
+
+
 @events.init.add_listener
 def on_locust_init(environment, **kwargs):
     """
-    Event handler called when Locust initializes.
-    
-    Validate tenant pool exists.
+    Ensure the tenant pool is fully populated before users start.
+
+    Execution depends on the runner role:
+
+    Master / standalone
+        If pool file already exists → set _pool_ready immediately.
+        If pool is empty → create all tenants via the application API,
+        save the pool file, then set _pool_ready.
+
+    Worker (distributed mode)
+        Pool file is on a shared volume written by the master.
+        Poll until the file appears, then set _pool_ready locally.
+        Workers never call the API directly to avoid race conditions.
     """
+    from locust.runners import WorkerRunner
+    from utils.tenant_factory import TenantFactory, load_tenant_pool
+
     try:
-        from utils.tenant_factory import load_tenant_pool
-        tenants = load_tenant_pool()
-    except UnicodeEncodeError:
-        # Windows console encoding issue
-        from utils.tenant_factory import load_tenant_pool
         tenants = load_tenant_pool()
     except Exception:
         tenants = []
-    
-    if not tenants:
+
+    is_worker = isinstance(environment.runner, WorkerRunner)
+
+    # ── Pool already populated ──────────────────────────────────────────────
+    if tenants:
+        print(f"\n[INIT] {len(tenants)} tenants disponíveis no pool — pronto para iniciar.\n")
+        _pool_ready.set()
+        return
+
+    # ── Worker: wait for master to write the pool file ──────────────────────
+    if is_worker:
+        print("\n[WORKER] Pool vazia — aguardando master criar tenants via API...")
+        if _wait_for_pool_file(max_wait=_POOL_WAIT_TIMEOUT):
+            count = len(load_tenant_pool())
+            print(f"[WORKER] Pool recebida com {count} tenants — pronto para iniciar.\n")
+            _pool_ready.set()
+        else:
+            print(
+                f"\n[WORKER] TIMEOUT: pool ainda vazia após {_POOL_WAIT_TIMEOUT}s. "
+                "Verifique o master e LOADTEST_ADMIN_TOKEN.\n"
+            )
+        return
+
+    # ── Master / standalone: create tenants via the application API ─────────
+    has_token = settings.ADMIN_TOKEN != "change-this-to-your-admin-seed-token"
+    if not has_token:
         print("\n" + "!" * 80)
-        print("WARNING: Tenant pool is empty!")
-        print("Run: python load_tests/utils/tenant_factory.py --create --count 50")
+        print("ERRO: Pool vazia e LOADTEST_ADMIN_TOKEN não está configurado.")
+        print("Configure a variável e reinicie, ou crie manualmente:")
+        print("  python load_tests/utils/tenant_factory.py --create --count 50")
         print("!" * 80 + "\n")
-    else:
-        print(f"\n[OK] Loaded {len(tenants)} tenants from pool\n")
+        return
+
+    tenant_count = settings.TENANT_COUNT
+    print(f"\n[INIT] Pool vazia — criando {tenant_count} tenants via API da aplicação...")
+
+    factory = TenantFactory(
+        api_base_url=settings.API_BASE_URL,
+        admin_token=settings.ADMIN_TOKEN,
+        pool_file=settings.TENANT_POOL_FILE,
+    )
+    try:
+        factory.create_tenants(count=tenant_count, prefix=settings.TENANT_PREFIX)
+    except Exception as exc:
+        print(f"\n[INIT] ERRO ao criar tenants: {exc}")
+        print("Verifique LOADTEST_API_BASE_URL e LOADTEST_ADMIN_TOKEN.")
+        _abort_locust(environment, f"Tenant creation raised an exception: {exc}")
+        return
+
+    if not factory.tenants:
+        _abort_locust(
+            environment,
+            "0 tenants foram criados. Verifique LOADTEST_ADMIN_TOKEN e "
+            "LOADTEST_API_BASE_URL antes de iniciar o teste.",
+        )
+        return
+
+    factory.save_pool()
+    print(
+        f"[INIT] {len(factory.tenants)} tenants criados e salvos em "
+        f"{settings.TENANT_POOL_FILE} — pronto para iniciar.\n"
+    )
+    _pool_ready.set()

@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   db:
     image: postgres:16-alpine
@@ -71,7 +69,7 @@ services:
     command: >
       sh -c "alembic upgrade head &&
              python scripts/seed_admin.py &&
-             uvicorn src.main:app --host 0.0.0.0 --port 8000 --workers ${UVICORN_WORKERS:-1}"
+             uvicorn src.main:app --host 0.0.0.0 --port 8000 --workers ${UVICORN_WORKERS:-4}"
 
   worker:
     build:

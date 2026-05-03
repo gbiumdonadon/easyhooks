@@ -10,6 +10,116 @@ Este diretório contém:
 - **Dashboards**: Grafana dashboard customizado para análise
 - **Scripts**: preparação de sistema e automação
 
+## Quick Start v2 (Recomendado)
+
+### Novo Fluxo Simplificado
+
+A infraestrutura foi reestruturada para facilitar a execução de testes. Agora você pode rodar testes com **um único comando**!
+
+#### Opção 1: Usando Scripts Wrapper (Mais Flexível)
+
+```bash
+# 1. Configure as variáveis de ambiente (primeira vez apenas)
+cd load_tests
+cp .env.loadtest.example .env.loadtest
+# Edite .env.loadtest se necessário
+
+# 2. Valide o ambiente
+./validate-env.sh
+
+# 3. Execute o teste desejado
+./run-loadtest.sh baseline              # Teste baseline (10 min, carga moderada)
+./run-loadtest.sh throughput            # Teste de throughput (30 min, alta carga)
+./run-loadtest.sh websocket_scale       # Teste WebSocket (10k conexões)
+```
+
+**O script automaticamente:**
+- ✅ Valida pré-requisitos (Docker, variáveis de ambiente)
+- ✅ Detecta se API é local e garante que o stack está rodando
+- ✅ Aguarda API ficar pronta (healthcheck automático)
+- ✅ Cria tenants de teste automaticamente
+- ✅ Inicia Locust com master + workers
+- ✅ Abre UI em http://localhost:8089
+
+#### Opção 2: Usando Makefile (Mais Rápido)
+
+```bash
+# Validar ambiente
+make loadtest-validate
+
+# Rodar testes
+make loadtest-local          # Baseline contra localhost
+make loadtest-throughput     # Teste de throughput
+make loadtest-ws-scale       # Teste WebSocket scale
+
+# Gerenciar testes
+make loadtest-status         # Ver status dos containers
+make loadtest-logs           # Ver logs em tempo real
+make loadtest-stop           # Parar containers
+make loadtest-clean          # Parar e limpar tenant pool
+
+# Abrir dashboards
+make loadtest-ui             # Abrir Locust UI
+make loadtest-grafana        # Abrir Grafana
+make loadtest-prometheus     # Abrir Prometheus
+
+# Ver todos os comandos
+make help
+```
+
+### Testando Contra Ambientes Remotos
+
+```bash
+# Staging
+export LOADTEST_API_BASE_URL=https://staging.easyhooks.io
+export LOADTEST_ADMIN_TOKEN=<staging-token>
+./run-loadtest.sh baseline
+
+# Ou usando Makefile
+LOADTEST_API_BASE_URL=https://staging.easyhooks.io make loadtest-throughput
+```
+
+### Variáveis de Ambiente Importantes
+
+| Variável | Descrição | Padrão |
+|----------|-----------|--------|
+| `LOADTEST_API_BASE_URL` | URL da API a testar | `http://localhost:8000` |
+| `LOADTEST_ADMIN_TOKEN` | Token admin para criar tenants | (obrigatório) |
+| `LOADTEST_TENANT_COUNT` | Número de tenants | `50` |
+| `LOADTEST_WORKERS` | Número de workers Locust | `2` |
+
+### Troubleshooting Quick Start
+
+**Erro: "API não está respondendo"**
+```bash
+# Verifique se o stack principal está rodando
+docker compose ps
+
+# Se não estiver, suba o stack
+docker compose up -d
+
+# Aguarde ficar healthy
+docker compose ps
+```
+
+**Erro: "LOADTEST_ADMIN_TOKEN não configurada"**
+```bash
+# Copie o token do .env principal
+export LOADTEST_ADMIN_TOKEN=$(grep ADMIN_SEED_TOKEN ../.env | cut -d= -f2)
+
+# Ou defina manualmente
+export LOADTEST_ADMIN_TOKEN=seu-token-aqui
+```
+
+**Erro: "Docker daemon não está acessível"**
+```bash
+# Inicie o Docker Desktop (Windows/Mac)
+# Ou inicie o daemon (Linux)
+sudo systemctl start docker
+```
+
+---
+
 ## Arquitetura dos Testes
 
 ```
@@ -34,7 +144,11 @@ Este diretório contém:
          └────────────────────────────────────────┘
 ```
 
-## Quick Start
+---
+
+## Manual Setup (Modo Legado)
+
+Se preferir executar manualmente ou precisa de mais controle, use este método:
 
 ### 1. Preparar o Sistema
 
