@@ -91,7 +91,7 @@ Para Windows, use **WSL2** ou **Docker Desktop**. Os comandos abaixo são portá
 ### 1. Clonar e configurar ambiente
 
 ```bash
-git clone https://github.com/seuusuario/easyhooks.git
+git clone https://github.com/gbiumdonadon/easyhooks.git
 cd easyhooks
 
 # Copiar template de ambiente e configurar
@@ -345,7 +345,8 @@ Para documentação detalhada, veja <http://localhost:3001/observability/monitor
 │       ├── webhook_service.py
 │       ├── webhook_processor.py
 │       ├── kafka_producer.py
-│       ├── pubsub.py
+│       ├── event_streams.py
+│       ├── ws_fanout.py
 │       └── ws_token.py
 ├── load_tests/                # Testes de carga (Locust)
 │   ├── locustfile.py          # Usuários WebhookUser + WebSocketUser

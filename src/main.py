@@ -59,6 +59,12 @@ app.include_router(tokens_router)
 app.include_router(ws_router)
 
 
+@app.get("/health", include_in_schema=False)
+async def health_check():
+    """Health check endpoint for load balancers and monitoring."""
+    return {"status": "healthy", "service": "easyhooks"}
+
+
 @app.get("/metrics", include_in_schema=False)
 async def prometheus_metrics():
     """Prometheus metrics endpoint."""

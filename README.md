@@ -87,7 +87,7 @@ For Windows, use **WSL2** or **Docker Desktop**. Commands below are portable (Po
 ### 1. Clone and set up environment
 
 ```bash
-git clone https://github.com/yourusername/easyhooks.git
+git clone https://github.com/gbiumdonadon/easyhooks.git
 cd easyhooks
 
 # Copy environment template and configure

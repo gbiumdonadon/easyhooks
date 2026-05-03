@@ -7,6 +7,8 @@ build/
 .eggs/
 *.egg
 .env
+.env.local
+.env.*.local
 .venv/
 venv/
 env/
@@ -38,6 +40,9 @@ Thumbs.db
 
 # Logs
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
 # ai tools
 .cursor/

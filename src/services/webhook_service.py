@@ -20,7 +20,9 @@ async def produce_webhook_message(
     message_value = json.dumps(payload).encode("utf-8")
     headers = _build_message_headers(tenant_id, event_id)
 
-    await producer.send_and_wait(
+    # Fire-and-forget: don't wait for ACK to reduce latency
+    # Idempotency is handled by the worker (event_lock in Redis)
+    await producer.send(
         topic=settings.KAFKA_WEBHOOK_TOPIC,
         value=message_value,
         headers=headers,
