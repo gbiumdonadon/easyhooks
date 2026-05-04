@@ -18,7 +18,7 @@ After starting the stack with `docker compose up -d`:
 
 ```mermaid
 flowchart LR
-    App[FastAPI App] -->|/metrics| Prometheus
+    App[Go API] -->|/metrics| Prometheus
     Worker[Kafka Worker] -->|metrics| Prometheus
     KafkaExporter[Kafka Exporter] --> Prometheus
     RedisExporter[Redis Exporter] --> Prometheus

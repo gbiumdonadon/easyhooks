@@ -17,7 +17,7 @@ A plataforma **não envia mensagens de protocolo da aplicação** (ex.: `{"type"
 
 A camada WebSocket do protocolo já tem **frames de controle de ping/pong** independentes do payload da aplicação:
 
-- O servidor (uvicorn) envia **ping** automaticamente em intervalos regulares (padrão: a cada 20s).
+- O servidor envia **ping** automaticamente em intervalos regulares (padrão: a cada 20s).
 - O cliente WebSocket — todos os clientes compatíveis com a RFC 6455, incluindo navegadores e bibliotecas como `websockets` (Python), `ws` (Node), `gorilla/websocket` (Go) — responde com **pong** automaticamente.
 - Se o servidor não receber pong em ~20s, ele encerra a conexão (ela aparece como `onclose` no cliente).
 

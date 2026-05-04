@@ -2,7 +2,7 @@
 
 [🇺🇸 English version](README.md)
 
-Plataforma multi-tenant de **ingestão, processamento idempotente e distribuição em tempo real** de webhooks. FastAPI + Kafka + Redis + Postgres, com WebSocket pub/sub para entrega push aos clientes finais.
+Plataforma multi-tenant de **ingestão, processamento idempotente e distribuição em tempo real** de webhooks. Go (Chi) + Kafka + Redis + Postgres, com WebSocket pub/sub para entrega push aos clientes finais.
 
 > **Documentação completa do produto:** consulte o site Docusaurus em `http://localhost:3001` (sobe via `docker compose up -d`). Conteúdo organizado em Início Rápido, Referência da API, WebSockets e Erros/DLQ.
 
@@ -33,7 +33,7 @@ Plataforma multi-tenant de **ingestão, processamento idempotente e distribuiç�
 
 ```mermaid
 flowchart LR
-    Admin[Admin] -->|"POST /admin/tenants"| API[FastAPI app]
+    Admin[Admin] -->|"POST /admin/tenants"| API[Go API (Chi)]
     Cliente[Cliente] -->|"POST /v1/webhooks/:id<br/>+ HMAC"| API
     API -->|"http_requests_total\nhttp_request_duration_seconds"| Prometheus[(Prometheus)]
     API -->|"webhooks.inbound"| Kafka[(Kafka)]
@@ -48,7 +48,7 @@ flowchart LR
     Locust[Locust] -->|"load test"| API
 ```
 
-- **`app`** — FastAPI: Admin API, ingestor de webhooks, emissor de tokens WS, endpoint WebSocket, middleware de métricas HTTP.
+- **`app`** — Go/Chi: Admin API, ingestor de webhooks, emissor de tokens WS, endpoint WebSocket, middleware de métricas HTTP.
 - **`worker`** — Consumer Kafka dedicado: idempotência (Redis), retry exponencial, DLQ e pub/sub.
 - **`docs`** — Site Docusaurus (Nginx servindo estáticos).
 - **`db`** — Postgres 16 (tenants, admins).
@@ -62,15 +62,15 @@ flowchart LR
 
 | Camada | Tecnologia |
 | --- | --- |
-| Linguagem | Python 3.12 |
-| Web framework | FastAPI + Uvicorn |
-| ORM / Migrations | SQLAlchemy (async) + Alembic |
-| Mensageria | Apache Kafka (`aiokafka`) |
+| Linguagem | Go 1.24 |
+| Web framework | Chi (`go-chi/chi`) + `net/http` stdlib |
+| Database driver / Migrations | `pgx/v5` + `golang-migrate` |
+| Mensageria | Apache Kafka (`twmb/franz-go`) |
 | Cache / Pub-Sub | Redis 7 |
 | Banco | PostgreSQL 16 |
 | Observabilidade | Prometheus + Grafana + Jaeger (OpenTelemetry) |
 | Testes de Carga | Locust (cenários HTTP + WebSocket) |
-| Testes | `pytest`, `pytest-asyncio`, `httpx`, `httpx-ws`, `testcontainers[kafka]` |
+| Testes | `testing` stdlib + `testify` + `miniredis` |
 | Docs | Docusaurus 3 (Node 20 build → Nginx Alpine runtime) |
 | Infra | Docker Compose |
 
@@ -79,7 +79,7 @@ flowchart LR
 ## Pré-requisitos
 
 - **Docker** ≥ 24 + **Docker Compose** v2.
-- (Opcional para rodar fora do Docker) **Python 3.12+**, **Node 20+**.
+- (Opcional para rodar fora do Docker) **Go 1.24+**, **Node 20+**.
 - (Opcional, recomendado) **`make`**, **`curl`**, **`jq`**, **`openssl`**.
 
 Para Windows, use **WSL2** ou **Docker Desktop**. Os comandos abaixo são portáveis (PowerShell, bash e zsh).
@@ -121,7 +121,7 @@ docker compose up -d
 docker compose ps        # confirmar todos health=healthy
 ```
 
-A primeira subida demora ~1-2 min (build da imagem Python + download das images base). Subidas seguintes são quase instantâneas.
+A primeira subida demora ~2-3 min (build Go + download das images base). Subidas seguintes são quase instantâneas.
 
 ### 3. Verificar que tudo subiu
 

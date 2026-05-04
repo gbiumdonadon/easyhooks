@@ -12,7 +12,7 @@ Cada tenant tem um **canal exclusivo** de WebSocket no qual recebe os eventos pu
 ```mermaid
 sequenceDiagram
     participant C as Cliente
-    participant API as FastAPI
+    participant API as Go API
     participant R as Redis Pub/Sub
     participant W as Worker
     C->>API: POST /v1/tokens/{tenant_id} (Bearer)

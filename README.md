@@ -2,7 +2,7 @@
 
 [🇧🇷 Portuguese version](README.pt-br.md)
 
-Multi-tenant platform for **ingestion, idempotent processing, and real-time distribution** of webhooks. Built with FastAPI + Kafka + Redis + PostgreSQL, featuring WebSocket pub/sub for push delivery to end clients.
+Multi-tenant platform for **ingestion, idempotent processing, and real-time distribution** of webhooks. Built with Go (Chi) + Kafka + Redis + PostgreSQL, featuring WebSocket pub/sub for push delivery to end clients.
 
 > **Full product documentation:** Check the Docusaurus site at `http://localhost:3001` (starts via `docker compose up -d`). Content organized in Quick Start, API Reference, WebSockets, and Error Handling sections.
 
@@ -29,7 +29,7 @@ Multi-tenant platform for **ingestion, idempotent processing, and real-time dist
 
 ```mermaid
 flowchart LR
-    Admin[Admin] -->|"POST /admin/tenants"| API[FastAPI app]
+    Admin[Admin] -->|"POST /admin/tenants"| API[Go API (Chi)]
     Client[Client] -->|"POST /v1/webhooks/:id<br/>+ HMAC"| API
     API -->|"http_requests_total\nhttp_request_duration_seconds"| Prometheus[(Prometheus)]
     API -->|"webhooks.inbound"| Kafka[(Kafka)]
@@ -44,7 +44,7 @@ flowchart LR
     Locust[Locust] -->|"load test"| API
 ```
 
-- **`app`** — FastAPI: Admin API, webhook ingestor, WS token issuer, WebSocket endpoint, HTTP metrics middleware.
+- **`app`** — Go/Chi: Admin API, webhook ingestor, WS token issuer, WebSocket endpoint, HTTP metrics middleware.
 - **`worker`** — Dedicated Kafka consumer: idempotency (Redis), exponential retry, DLQ, and pub/sub.
 - **`docs`** — Docusaurus site (Nginx serving static files).
 - **`db`** — PostgreSQL 16 (tenants, admins).
@@ -58,15 +58,15 @@ flowchart LR
 
 | Layer | Technology |
 | --- | --- |
-| Language | Python 3.12 |
-| Web framework | FastAPI + Uvicorn |
-| ORM / Migrations | SQLAlchemy (async) + Alembic |
-| Messaging | Apache Kafka (`aiokafka`) |
-| Cache / Pub-Sub | Redis 7 |
+| Language | Go 1.24 |
+| Web framework | Chi (`go-chi/chi`) + `net/http` stdlib |
+| Database driver / Migrations | `pgx/v5` + `golang-migrate` |
+| Messaging | Apache Kafka (`twmb/franz-go`) |
+| Cache / Streams | Redis 7 (`go-redis/v9`) |
 | Database | PostgreSQL 16 |
 | Observability | Prometheus + Grafana + Jaeger (OpenTelemetry) |
 | Load Testing | Locust (HTTP + WebSocket scenarios) |
-| Tests | `pytest`, `pytest-asyncio`, `httpx`, `httpx-ws`, `testcontainers[kafka]` |
+| Tests | `testing` stdlib + `testify` + `miniredis` |
 | Docs | Docusaurus 3 (Node 20 build → Nginx Alpine runtime) |
 | Infra | Docker Compose |
 
@@ -75,7 +75,7 @@ flowchart LR
 ## Prerequisites
 
 - **Docker** ≥ 24 + **Docker Compose** v2.
-- (Optional for running outside Docker) **Python 3.12+**, **Node 20+**.
+- (Optional for running outside Docker) **Go 1.24+**, **Node 20+**.
 - (Optional, recommended) **`make`**, **`curl`**, **`jq`**, **`openssl`**.
 
 For Windows, use **WSL2** or **Docker Desktop**. Commands below are portable (PowerShell, bash, and zsh).
@@ -117,11 +117,11 @@ docker compose up -d
 docker compose ps        # confirm all services are healthy
 ```
 
-First startup takes ~1-2 minutes (Python image build + base images download). Subsequent starts are almost instant.
+First startup takes ~2-3 minutes (Go build + base images download). Subsequent starts are almost instant.
 
 ### 3. Verify everything is running
 
-- API: <http://localhost:8000/docs> (Swagger UI).
+- API: <http://localhost:8000/health> (health check).
 - Documentation: <http://localhost:3001>.
 - Redis: `docker compose exec redis redis-cli ping` → `PONG`.
 - Kafka: `docker compose exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list`.

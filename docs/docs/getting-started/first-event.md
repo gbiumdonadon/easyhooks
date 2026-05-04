@@ -12,7 +12,7 @@ With the tenant created in [Authentication](./authentication.md), let's send a c
 ```mermaid
 sequenceDiagram
     participant C as Client (curl)
-    participant API as FastAPI Ingestor
+    participant API as Go API Ingestor
     participant K as Kafka (webhooks.inbound)
     participant W as Worker
     participant R as Redis Pub/Sub
