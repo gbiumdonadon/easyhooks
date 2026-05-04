@@ -537,15 +537,79 @@ load_tests/
     └── custom_metrics.json       # Métricas customizadas
 ```
 
+## Procedimento de Limpeza Pré-Teste
+
+**IMPORTANTE**: Antes de cada sessão de teste de carga, execute a limpeza completa para garantir resultados consistentes e evitar problemas de recursos acumulados.
+
+### Limpeza Completa (Recomendado)
+
+```bash
+# Parar todos os containers e remover volumes
+docker compose down -v
+
+# Verificar que não há containers órfãos
+docker ps -a | grep easyhooks
+
+# Subir o stack limpo
+docker compose up -d
+
+# Aguardar todos os serviços ficarem healthy
+docker compose ps
+```
+
+### Por que a limpeza é necessária?
+
+1. **Kafka logs acumulados**: O Kafka armazena logs em `/tmp/kraft-combined-logs`. Sem limpeza, esses logs crescem indefinidamente e podem causar degradação de I/O.
+
+2. **Redis memory fragmentation**: Após muitos ciclos de teste, o Redis pode ter fragmentação de memória que afeta performance.
+
+3. **PostgreSQL bloat**: WAL logs e dados de teste antigos ocupam espaço e podem afetar queries.
+
+4. **Jaeger traces em memória**: Com `SPAN_STORAGE_TYPE=memory`, os traces acumulam e consomem RAM progressivamente.
+
+5. **Tenant pool desatualizado**: Se a estrutura de dados mudou entre testes, a pool antiga pode causar erros.
+
+### Limpeza Rápida (Entre testes curtos)
+
+```bash
+# Limpar apenas a pool de tenants
+rm -f load_tests/.tenant_pool.json
+
+# Reiniciar serviços sem perder dados
+docker compose restart app worker
+```
+
+### Limpeza da Stack de Monitoramento
+
+Se estiver rodando sem o profile de monitoramento e quiser desligar manualmente:
+
+```bash
+# Para desligar apenas observabilidade (liberando recursos)
+docker compose stop prometheus grafana jaeger kafka-exporter redis-exporter postgres-exporter
+```
+
+Para subir com monitoramento:
+```bash
+docker compose --profile monitoring up -d
+```
+
+Para subir sem monitoramento (economia de recursos):
+```bash
+docker compose up -d  # Serviços de monitoramento não sobem
+```
+
+---
+
 ## Boas Práticas
 
 ### Antes do Teste
 
-1. ✅ Executar `prepare_system.sh` / `prepare_system.ps1`
-2. ✅ Verificar recursos do Docker Desktop (8GB+ RAM)
-3. ✅ Criar pool de tenants (`--count 50` no mínimo)
-4. ✅ Verificar que todos os serviços estão healthy
-5. ✅ Limpar dados antigos se necessário
+1. ✅ **Executar limpeza completa** (`docker compose down -v`)
+2. ✅ Executar `prepare_system.sh` / `prepare_system.ps1`
+3. ✅ Verificar recursos do Docker Desktop (8GB+ RAM)
+4. ✅ Criar pool de tenants (`--count 50` no mínimo)
+5. ✅ Verificar que todos os serviços estão healthy
+6. ✅ Aguardar warm-up automático de caches de autenticação
 
 ### Durante o Teste
 

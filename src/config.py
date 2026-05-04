@@ -3,6 +3,8 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     DATABASE_URL: str
+    DATABASE_POOL_SIZE: int = 20
+    DATABASE_MAX_OVERFLOW: int = 10
     REDIS_URL: str = "redis://localhost:6379/0"
     REDIS_POOL_SIZE: int = 100
     ADMIN_SEED_TOKEN: str

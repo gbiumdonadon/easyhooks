@@ -41,9 +41,9 @@ async def test_should_produce_message_to_kafka_with_tenant_header(
     assert response.status_code == 202
 
     # Kafka producer was called exactly once
-    kafka_mock.send_and_wait.assert_called_once()
+    kafka_mock.send.assert_called_once()
 
-    call_kwargs = kafka_mock.send_and_wait.call_args
+    call_kwargs = kafka_mock.send.call_args
 
     # Topic should be the configured webhook topic
     assert call_kwargs.kwargs.get("topic") == "webhooks.inbound"
@@ -114,9 +114,9 @@ async def test_should_propagate_event_id_to_kafka_headers(
     )
 
     assert response.status_code == 202
-    kafka_mock.send_and_wait.assert_called_once()
+    kafka_mock.send.assert_called_once()
 
-    sent_headers = kafka_mock.send_and_wait.call_args.kwargs.get("headers")
+    sent_headers = kafka_mock.send.call_args.kwargs.get("headers")
     assert sent_headers is not None
     header_dict = {k: v for k, v in sent_headers}
     assert header_dict.get("event_id") == event_id.encode()

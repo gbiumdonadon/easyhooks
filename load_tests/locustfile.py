@@ -16,6 +16,13 @@ dispatched.  The module-level `_pool_ready` Event coordinates this:
 - Both `WebhookUser.on_start` and `WebSocketUser.on_start` block on
   `_pool_ready.wait()` before acquiring a tenant, guaranteeing that no
   webhook request is sent until the pool is fully populated.
+
+Auth warm-up
+------------
+Bearer authentication uses bcrypt (~100ms per verification). The system
+caches sessions in Redis after the first successful verification, but
+cold-start with many tenants can overwhelm the system. The warm-up phase
+pre-populates auth caches before the main load test begins.
 """
 import json
 import sys
@@ -37,6 +44,72 @@ _pool_ready = threading.Event()
 
 # How long (seconds) on_start waits for the pool before raising.
 _POOL_WAIT_TIMEOUT = 120
+
+# Number of warm-up requests per tenant (to populate auth session caches)
+_WARMUP_REQUESTS_PER_TENANT = 1
+
+# Delay between warm-up requests (seconds) to avoid overwhelming the system
+_WARMUP_DELAY_SECONDS = 0.05
+
+
+def _warmup_auth_sessions(tenants: list, api_base_url: str) -> int:
+    """
+    Pre-warm auth session caches by making one request per tenant.
+
+    Bearer auth uses bcrypt (~100ms per verification). The first request for
+    each tenant triggers bcrypt and caches the session in Redis. Subsequent
+    requests use the cached session, avoiding the bcrypt overhead.
+
+    This warm-up runs sequentially with small delays to avoid overwhelming
+    the system during cold start.
+
+    Args:
+        tenants: List of (tenant_id, secret) tuples
+        api_base_url: Base URL of the API
+
+    Returns:
+        Number of successfully warmed up tenants
+    """
+    import requests
+
+    warmed = 0
+    total = len(tenants)
+
+    print(f"[WARMUP] Pre-aquecendo caches de autenticacao para {total} tenants...")
+
+    for i, (tenant_id, secret) in enumerate(tenants):
+        try:
+            payload = {"event": "warmup.ping", "data": {"seq": i}}
+            body = json.dumps(payload)
+            signature = sign_webhook(secret, body)
+
+            response = requests.post(
+                f"{api_base_url}/v1/webhooks/{tenant_id}",
+                headers={
+                    "X-Webhook-Signature": signature,
+                    "X-Event-Id": f"warmup-{uuid.uuid4()}",
+                    "Content-Type": "application/json",
+                },
+                data=body,
+                timeout=10,
+            )
+
+            if response.status_code == 202:
+                warmed += 1
+            else:
+                print(f"[WARMUP] Tenant {tenant_id[:8]}... retornou {response.status_code}")
+
+        except Exception as e:
+            print(f"[WARMUP] Erro no tenant {tenant_id[:8]}...: {e}")
+
+        if _WARMUP_DELAY_SECONDS > 0:
+            time.sleep(_WARMUP_DELAY_SECONDS)
+
+        if (i + 1) % 10 == 0:
+            print(f"[WARMUP] Progresso: {i + 1}/{total} tenants ({warmed} OK)")
+
+    print(f"[WARMUP] Concluido: {warmed}/{total} tenants pre-aquecidos.\n")
+    return warmed
 
 
 def _abort_locust(environment, reason: str) -> None:
@@ -377,7 +450,10 @@ def on_locust_init(environment, **kwargs):
 
     # ── Pool already populated ──────────────────────────────────────────────
     if tenants:
-        print(f"\n[INIT] {len(tenants)} tenants disponíveis no pool — pronto para iniciar.\n")
+        print(f"\n[INIT] {len(tenants)} tenants disponíveis no pool.")
+        # Warm up auth session caches even if tenants already exist
+        _warmup_auth_sessions(tenants, settings.API_BASE_URL)
+        print("[INIT] Pronto para iniciar o teste de carga.\n")
         _pool_ready.set()
         return
 
@@ -432,6 +508,11 @@ def on_locust_init(environment, **kwargs):
     factory.save_pool()
     print(
         f"[INIT] {len(factory.tenants)} tenants criados e salvos em "
-        f"{settings.TENANT_POOL_FILE} — pronto para iniciar.\n"
+        f"{settings.TENANT_POOL_FILE}.\n"
     )
+
+    # Warm up auth session caches to avoid bcrypt overhead during load test
+    _warmup_auth_sessions(factory.tenants, settings.API_BASE_URL)
+
+    print("[INIT] Pronto para iniciar o teste de carga.\n")
     _pool_ready.set()

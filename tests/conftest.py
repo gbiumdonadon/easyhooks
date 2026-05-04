@@ -68,6 +68,7 @@ async def admin_token(db_session):
 @pytest_asyncio.fixture
 async def kafka_mock():
     mock = AsyncMock()
+    mock.send = AsyncMock()
     mock.send_and_wait = AsyncMock()
     return mock
 

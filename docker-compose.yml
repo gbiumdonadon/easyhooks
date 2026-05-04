@@ -104,6 +104,7 @@ services:
 
   prometheus:
     image: prom/prometheus:v2.51.0
+    profiles: ["monitoring"]
     ports:
       - "9090:9090"
     volumes:
@@ -124,6 +125,7 @@ services:
 
   grafana:
     image: grafana/grafana:10.4.0
+    profiles: ["monitoring"]
     ports:
       - "3000:3000"
     environment:
@@ -148,6 +150,7 @@ services:
 
   jaeger:
     image: jaegertracing/all-in-one:1.55
+    profiles: ["monitoring"]
     ports:
       - "16686:16686"
       - "4317:4317"
@@ -164,6 +167,7 @@ services:
 
   kafka-exporter:
     image: danielqsj/kafka-exporter:v1.7.0
+    profiles: ["monitoring"]
     ports:
       - "9308:9308"
     command:
@@ -176,6 +180,7 @@ services:
 
   redis-exporter:
     image: oliver006/redis_exporter:v1.58.0
+    profiles: ["monitoring"]
     ports:
       - "9121:9121"
     environment:
@@ -187,6 +192,7 @@ services:
 
   postgres-exporter:
     image: prometheuscommunity/postgres-exporter:v0.15.0
+    profiles: ["monitoring"]
     ports:
       - "9187:9187"
     environment:
