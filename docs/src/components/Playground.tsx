@@ -18,7 +18,7 @@ export default function Playground(): React.ReactElement {
         </p>
 
         <label className="playground-label">
-          URL da API (origem do FastAPI)
+          URL da API (backend Go)
           <input
             className="playground-input playground-input-mono"
             value={apiBaseUrl}

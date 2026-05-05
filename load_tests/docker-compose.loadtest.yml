@@ -1,33 +1,21 @@
-# Docker Compose for Standalone Load Testing
-# 
-# This compose file runs Locust independently from the main application stack.
-# It can test against local (localhost:8000) or remote APIs (staging, production).
+# Load tests: create tenant pool then run Grafana k6 against the API.
 #
-# Usage:
-#   # Test against local API
-#   export LOADTEST_API_BASE_URL=http://host.docker.internal:8000
-#   docker compose -f docker-compose.loadtest.yml up
+# Start the main stack first (`docker compose up -d` from repo root). This file attaches
+# to the stack network as `easyhooks_default` (default project name = directory name).
+# k6 and init use the API at http://app:8000 on that network (no host.docker.internal).
 #
-#   # Test against remote API
-#   export LOADTEST_API_BASE_URL=https://staging.easyhooks.io
-#   export LOADTEST_ADMIN_TOKEN=your-token
-#   docker compose -f docker-compose.loadtest.yml up
+# Usage (from repo root):
+#   docker compose -f load_tests/docker-compose.loadtest.yml run --rm k6 run k6/scenarios/baseline.js
 #
-# Environment Variables:
-#   LOADTEST_API_BASE_URL  - API endpoint to test (required)
-#   LOADTEST_ADMIN_TOKEN   - Admin token for tenant creation (required)
-#   LOADTEST_TENANT_COUNT  - Number of tenants to create (default: 50)
-#   LOADTEST_TENANT_PREFIX - Prefix for tenant names (default: loadtest)
-#   LOADTEST_WORKERS       - Number of Locust workers (default: 2)
+# Remote API / custom project name: set LOADTEST_API_BASE_URL, e.g.:
+#   LOADTEST_API_BASE_URL=http://host.docker.internal:8000 docker compose -f load_tests/...
+#
+# Override scenario:
+#   docker compose -f load_tests/docker-compose.loadtest.yml run --rm k6 run k6/scenarios/throughput.js
 
 services:
-  # Initialization service: waits for API and creates test tenants.
-  # The docker-entrypoint.sh resolves LOADTEST_ADMIN_TOKEN fallback before
-  # this command runs, so we can validate it with a plain shell check.
   loadtest-init:
-    build:
-      context: ..
-      dockerfile: load_tests/Dockerfile
+    image: alpine:3.20
     working_dir: /load_tests
     volumes:
       - .:/load_tests
@@ -35,94 +23,49 @@ services:
       - path: ../.env
         required: false
     environment:
-      - LOADTEST_API_BASE_URL=${LOADTEST_API_BASE_URL:-http://host.docker.internal:8000}
-      - LOADTEST_TENANT_COUNT=${LOADTEST_TENANT_COUNT:-50}
-      - LOADTEST_TENANT_PREFIX=${LOADTEST_TENANT_PREFIX:-loadtest}
-    command:
+      LOADTEST_API_BASE_URL: ${LOADTEST_API_BASE_URL:-http://app:8000}
+      LOADTEST_TENANT_COUNT: ${LOADTEST_TENANT_COUNT:-50}
+      LOADTEST_TENANT_PREFIX: ${LOADTEST_TENANT_PREFIX:-loadtest}
+      TENANT_POOL_FILE: /load_tests/.tenant_pool.json
+    entrypoint:
       - sh
       - -c
       - |
+        set -e
+        if [ -z "$$LOADTEST_ADMIN_TOKEN" ] && [ -n "$$ADMIN_SEED_TOKEN" ]; then
+          export LOADTEST_ADMIN_TOKEN="$$ADMIN_SEED_TOKEN"
+        fi
         if [ -z "$$LOADTEST_ADMIN_TOKEN" ]; then
-          echo "ERRO: LOADTEST_ADMIN_TOKEN nao configurado."
-          echo "  Defina a variavel ou garanta que ADMIN_SEED_TOKEN esta no .env"
+          echo "ERROR: set LOADTEST_ADMIN_TOKEN or ADMIN_SEED_TOKEN in .env"
           exit 1
         fi
-        echo "Verificando se API esta pronta..."
+        apk add --no-cache curl jq >/dev/null
+        chmod +x /load_tests/wait-for-api.sh /load_tests/scripts/create_tenant_pool.sh
         /load_tests/wait-for-api.sh
-        echo ""
-        echo "Criando $$LOADTEST_TENANT_COUNT tenants de teste..."
-        python utils/tenant_factory.py --create \
-          --count "$$LOADTEST_TENANT_COUNT" \
-          --prefix "$$LOADTEST_TENANT_PREFIX"
-        echo ""
-        echo "Ambiente pronto para testes de carga!"
+        /load_tests/scripts/create_tenant_pool.sh
     networks:
-      - loadtest-network
+      - easyhooks_default
 
-  # Locust Master: Web UI and test coordination.
-  # --host is resolved by Docker Compose at parse time (no shell escaping needed).
-  locust-master:
+  k6:
     build:
-      context: ..
-      dockerfile: load_tests/Dockerfile
+      context: .
+      dockerfile: Dockerfile
     working_dir: /load_tests
-    ports:
-      - "8089:8089"
-      - "5557:5557"
     volumes:
       - .:/load_tests
     env_file:
       - path: ../.env
         required: false
     environment:
-      - LOCUST_MODE=master
-      - LOADTEST_API_BASE_URL=${LOADTEST_API_BASE_URL:-http://host.docker.internal:8000}
-      - LOADTEST_TENANT_COUNT=${LOADTEST_TENANT_COUNT:-50}
-      - LOADTEST_TENANT_PREFIX=${LOADTEST_TENANT_PREFIX:-loadtest}
-    command:
-      - locust
-      - -f
-      - /load_tests/locustfile.py
-      - --master
-      - --expect-workers=${LOADTEST_WORKERS:-2}
-      - --host=${LOADTEST_API_BASE_URL:-http://host.docker.internal:8000}
+      LOADTEST_API_BASE_URL: ${LOADTEST_API_BASE_URL:-http://app:8000}
+      TENANT_POOL_FILE: /load_tests/.tenant_pool.json
     depends_on:
       loadtest-init:
         condition: service_completed_successfully
-    restart: unless-stopped
     networks:
-      - loadtest-network
-
-  # Locust Workers: Generate the actual load.
-  # Workers also receive --host so they can build the HTTP client independently.
-  locust-worker:
-    build:
-      context: ..
-      dockerfile: load_tests/Dockerfile
-    working_dir: /load_tests
-    volumes:
-      - .:/load_tests
-    env_file:
-      - path: ../.env
-        required: false
-    environment:
-      - LOCUST_MODE=worker
-      - LOADTEST_API_BASE_URL=${LOADTEST_API_BASE_URL:-http://host.docker.internal:8000}
-    command:
-      - locust
-      - -f
-      - /load_tests/locustfile.py
-      - --worker
-      - --master-host=locust-master
-      - --host=${LOADTEST_API_BASE_URL:-http://host.docker.internal:8000}
-    depends_on:
-      - locust-master
-    deploy:
-      replicas: ${LOADTEST_WORKERS:-2}
-    restart: unless-stopped
-    networks:
-      - loadtest-network
+      - easyhooks_default
+    command: ['run', 'k6/scenarios/baseline.js']
 
 networks:
-  loadtest-network:
-    driver: bridge
+  easyhooks_default:
+    external: true

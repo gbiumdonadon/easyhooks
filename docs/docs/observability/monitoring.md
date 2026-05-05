@@ -4,235 +4,199 @@ sidebar_position: 1
 
 # Monitoring and Metrics
 
-EasyHooks includes a complete observability stack with **Prometheus**, **Grafana**, and **Jaeger** for comprehensive monitoring of your webhook platform.
+EasyHooks ships an **opt-in** observability stack — Prometheus, Grafana,
+Jaeger and `redis-exporter` — that lives in `docker-compose.monitoring.yml`.
+Bring it up with:
 
-## Quick Access
+```bash
+docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
+```
 
-After starting the stack with `docker compose up -d`:
+## Quick access
 
-- **Grafana Dashboards**: http://localhost:3000 (admin/admin)
+- **Grafana dashboards**: http://localhost:3000 (creds from `.env` —
+  `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD`)
 - **Prometheus UI**: http://localhost:9090
-- **Jaeger Tracing**: http://localhost:16686
+- **Jaeger tracing**: http://localhost:16686
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    App[FastAPI App] -->|/metrics| Prometheus
-    Worker[Kafka Worker] -->|metrics| Prometheus
-    KafkaExporter[Kafka Exporter] --> Prometheus
-    RedisExporter[Redis Exporter] --> Prometheus
-    PostgresExporter[Postgres Exporter] --> Prometheus
+    App[Go API] -->|/metrics| Prometheus
+    Worker[Redis Streams Worker] -->|/metrics via API| Prometheus
+    RedisExporter[redis-exporter] -->|XLEN, XPENDING, ...| Prometheus
     Prometheus --> Grafana[Grafana Dashboards]
+    App -->|OTLP traces| Jaeger
+    Worker -->|OTLP traces| Jaeger
 ```
 
-## Key Metrics
+`redis-exporter` is configured with
+`REDIS_EXPORTER_CHECK_STREAMS=events:in,events:failed`, exposing
+`redis_stream_length` and `redis_stream_group_pending` for the work queue and
+the DLQ.
 
-### 1. Kafka Consumer Lag ⚠️ CRITICAL
+## Key metrics
 
-**The most important metric to monitor.** It shows how many messages are waiting to be processed.
+### 1. Worker backlog (XPENDING) ⚠️ CRITICAL
 
-- **Query**: `kafka_consumergroup_lag{consumergroup="webhook-workers"}`
-- **Healthy**: < 100 messages
-- **Warning**: 100-500 messages
-- **Critical**: > 1000 messages
+The single most important metric — how many entries the worker has not acked
+yet.
 
-**What it means:**
-- **Low lag (< 100)**: Worker is keeping up with incoming webhooks ✅
-- **Growing lag**: Worker is slower than ingestion rate 🔴
-- **Shrinking lag**: Worker is catching up 🟡
+- **Query**: `redis_stream_group_pending{stream="events:in",group="webhook-workers"}`
+- **Healthy**: < 100 pending
+- **Warning**: 100 – 500
+- **Critical**: > 1000
 
-**Troubleshooting high lag:**
-1. Scale worker horizontally (add more worker containers)
-2. Check worker logs for errors
-3. Verify Redis/Kafka performance
-4. Review webhook processing logic
+**Troubleshooting a high backlog:**
 
-### 2. Error Rate (DLQ)
+1. Scale the worker horizontally (`docker compose up -d --scale worker=N`).
+2. Check worker logs for handler errors.
+3. Verify Redis health (`redis-cli INFO`).
+4. Profile the business handler — large payloads or slow downstreams will
+   surface here.
 
-Messages that failed after all retry attempts.
+### 2. Stream length (queue depth)
 
-- **Query**: `rate(webhook_dlq_total[5m])`
-- **Healthy**: < 1% of total messages
-- **Warning**: 1-5%
-- **Critical**: > 5%
+```promql
+redis_stream_length{stream="events:in"}
+redis_stream_length{stream="events:failed"}
+```
 
-**Common causes:**
-- Invalid webhook payload
-- Downstream service unavailable
-- Processing timeout
-- Business logic errors
+- `events:in` length should track the publish/consume balance.
+- `events:failed` should stay flat — any growth indicates terminal failures.
 
-### 3. Processing Duration
+### 3. Error rate (DLQ ratio)
 
-Time to process each webhook event.
+Messages that failed after all retry attempts versus what was consumed:
 
-- **Query**: `histogram_quantile(0.95, rate(webhook_processing_duration_seconds_bucket[5m]))`
-- **p50 (median)**: < 50ms
-- **p95**: < 200ms
-- **p99**: < 500ms
+- **Query**: `rate(webhook_dlq_total[5m]) / rate(stream_consume_total[5m])`
+- **Healthy**: < 1 %
+- **Warning**: 1 – 5 %
+- **Critical**: > 5 %
 
-### 4. Idempotency Duplicates
+### 4. Processing duration
 
-How many duplicate events were detected and skipped.
+```promql
+histogram_quantile(0.95, rate(webhook_processing_duration_seconds_bucket[5m]))
+```
 
-- **Query**: `rate(idempotency_duplicates_total[5m])`
-- **Expected**: Low (indicates correct behavior)
-- **High rate**: May indicate retry storms or client issues
+- **p50 (median)**: < 50 ms
+- **p95**: < 200 ms
+- **p99**: < 500 ms
 
-### 5. Retry Distribution
+### 5. Idempotency duplicates
 
-Number of retries per attempt (1st, 2nd, 3rd).
+```promql
+rate(idempotency_duplicates_total[5m])
+```
 
-- **Query**: `sum by (attempt) (rate(webhook_retries_total[5m]))`
-- **Ideal**: Most events succeed on 1st attempt
-- **Warning**: High 2nd/3rd attempt rates
+A non-zero rate is healthy (clients retried). A spike usually means a client
+is misbehaving (retry storm).
 
-## Grafana Dashboards
+### 6. Throughput
+
+```promql
+rate(stream_publish_total{stream="events:in",status="success"}[5m])
+rate(stream_consume_total{stream="events:in"}[5m])
+```
+
+Publish and consume rates should track each other; a sustained gap means the
+worker is falling behind (and `redis_stream_group_pending` will rise).
+
+## Grafana dashboards
+
+Three dashboards are auto-provisioned:
 
 ### EasyHooks Overview
 
-Main dashboard showing:
+System-wide:
 - Webhook requests/sec
 - Processing latency (p50, p95, p99)
-- Error rates
+- DLQ ratio
 - Active WebSocket connections
 
-**Use case**: Real-time operations monitoring
+### EasyHooks Redis Streams Metrics
 
-### Kafka Metrics
+Replaces the old "Kafka Metrics" view. Panels:
 
-Focus on Kafka health:
-- **Consumer lag** (critical!)
-- Throughput (produced vs consumed)
-- Offset progression
-- Consumer group status
+- **Worker Backlog (XPENDING)** — `redis_stream_group_pending`
+- **Stream Throughput** — `stream_publish_total` vs `stream_consume_total`
+- **Stream Length (XLEN)** — `events:in` and `events:failed`
 
-**Use case**: Ensure worker keeps up with load
+### EasyHooks Load Test
 
-### Worker Processing
+Used while running k6 — request rate, latency percentiles, and the **Stream
+Pending Backlog** panel for spotting saturation under load.
 
-Detailed worker metrics:
-- Events processed vs failed
-- Retry attempts breakdown
-- DLQ rate by error type
-- Idempotency checks
-- Processing time distribution
-
-**Use case**: Debug processing issues
-
-### Infrastructure
-
-Low-level component monitoring:
-- Redis: Commands/sec, latency, memory
-- PostgreSQL: Connections, queries, cache hit
-- Kafka: Disk usage, broker health
-
-**Use case**: Infrastructure capacity planning
-
-### WebSockets
-
-Real-time delivery metrics:
-- Active connections by tenant
-- Messages sent/sec
-- Connection lifecycle events
-- Delivery latency
-
-**Use case**: Monitor real-time distribution
-
-## Alerting Recommendations
-
-### Production Alerts
-
-Configure these alerts in Prometheus:
+## Alerting recommendations
 
 ```yaml
 groups:
   - name: easyhooks_critical
     rules:
-      - alert: HighKafkaLag
-        expr: kafka_consumergroup_lag{consumergroup="webhook-workers"} > 1000
+      - alert: HighWorkerBacklog
+        expr: redis_stream_group_pending{stream="events:in",group="webhook-workers"} > 1000
         for: 5m
-        labels:
-          severity: critical
+        labels: { severity: critical }
         annotations:
-          summary: "Kafka consumer lag is too high"
-          description: "Worker is {{ $value }} messages behind"
+          summary: "Worker backlog above 1k pending entries"
+          description: "Worker is {{ $value }} entries behind"
 
-      - alert: HighErrorRate
-        expr: rate(webhook_dlq_total[5m]) / rate(kafka_consume_total[5m]) > 0.05
+      - alert: HighDLQRatio
+        expr: rate(webhook_dlq_total[5m]) / rate(stream_consume_total[5m]) > 0.05
         for: 5m
-        labels:
-          severity: warning
+        labels: { severity: warning }
         annotations:
-          summary: "High webhook processing error rate"
-          description: "{{ $value }}% of webhooks are failing"
+          summary: "DLQ ratio above 5%"
 
-      - alert: HighProcessingLatency
-        expr: histogram_quantile(0.95, rate(webhook_processing_duration_seconds_bucket[5m])) > 1
+      - alert: DLQGrowing
+        expr: increase(redis_stream_length{stream="events:failed"}[10m]) > 0
         for: 10m
-        labels:
-          severity: warning
+        labels: { severity: warning }
         annotations:
-          summary: "High webhook processing latency"
-          description: "p95 latency is {{ $value }}s"
+          summary: "Events keep landing in events:failed"
 
       - alert: RedisDown
         expr: up{job="redis-exporter"} == 0
         for: 1m
-        labels:
-          severity: critical
+        labels: { severity: critical }
         annotations:
-          summary: "Redis is down"
-
-      - alert: KafkaDown
-        expr: up{job="kafka-exporter"} == 0
-        for: 1m
-        labels:
-          severity: critical
-        annotations:
-          summary: "Kafka is down"
+          summary: "Redis is down (sole datastore)"
 ```
 
-## Best Practices
+## Best practices
 
-### 1. Monitor Trends, Not Just Current Values
+### Monitor trends, not just current values
 
-Look at metric trends over time:
-- Is lag growing or stable?
-- Is error rate increasing?
+- Is the backlog growing or stable?
+- Is the DLQ ratio drifting up?
 - Are latencies trending up?
 
-### 2. Set Baselines
+### Establish baselines
 
-Establish normal operating ranges:
-- Typical requests/sec
-- Normal processing duration
-- Expected error rate
-- Usual lag values
+- Typical requests/sec.
+- Normal processing duration.
+- Expected DLQ ratio.
+- Usual XPENDING values.
 
-### 3. Use Template Variables
+### Use template variables
 
-Create tenant-specific dashboards:
+Filter by tenant where it helps:
+
 ```promql
-# Filter by tenant_id
 webhook_requests_total{tenant_id="$tenant_id"}
 ```
 
-### 4. Correlate Metrics
+### Correlate metrics
 
-When investigating issues, check:
-- Kafka lag + error rate
-- Processing duration + retry rate
-- Redis latency + processing duration
+When investigating issues, look at:
 
-### 5. Regular Reviews
+- XPENDING + DLQ ratio.
+- Processing duration + retry rate.
+- Redis command latency + processing duration.
 
-- **Daily**: Check dashboards for anomalies
-- **Weekly**: Review trends and capacity
-- **Monthly**: Optimize based on patterns
-
-## Metrics Endpoint
+## Metrics endpoint
 
 The API exposes Prometheus metrics at:
 
@@ -240,61 +204,61 @@ The API exposes Prometheus metrics at:
 GET http://localhost:8000/metrics
 ```
 
-Response format:
+Sample:
+
 ```
 # HELP webhook_requests_total Total number of webhook requests received
 # TYPE webhook_requests_total counter
-webhook_requests_total{tenant_id="xxx",status="success"} 1234
+webhook_requests_total{tenant_id="xxx",status="accepted"} 1234
 
-# HELP webhook_processing_duration_seconds Time spent processing webhook events
-# TYPE webhook_processing_duration_seconds histogram
-webhook_processing_duration_seconds_bucket{tenant_id="xxx",le="0.005"} 100
-webhook_processing_duration_seconds_bucket{tenant_id="xxx",le="0.01"} 250
-...
+# HELP stream_consume_total Total number of messages consumed from a Redis Stream consumer group
+# TYPE stream_consume_total counter
+stream_consume_total{stream="events:in",consumer_group="webhook-workers"} 1234
 ```
 
 ## Configuration
 
-Observability settings in `.env`:
+`.env` toggles:
 
 ```bash
-# Enable/disable features
 METRICS_ENABLED=true
 TRACING_ENABLED=true
 
-# OpenTelemetry configuration
 OTEL_SERVICE_NAME=easyhooks
 OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
-TRACING_SAMPLE_RATE=1.0  # 100% in dev, lower in prod (e.g., 0.1)
+TRACING_SAMPLE_RATE=1.0  # 100% in dev, lower in prod (e.g. 0.1)
 ```
 
 ## Troubleshooting
 
 ### Metrics not showing up
 
-1. Check Prometheus targets: http://localhost:9090/targets
-2. Verify all targets are "UP"
-3. Check app logs for errors
-4. Ensure containers are healthy: `docker compose ps`
+1. Check Prometheus targets: http://localhost:9090/targets — both
+   `easyhooks-api` and `redis-exporter` should be `UP`.
+2. `curl http://localhost:8000/metrics` from your host.
+3. Verify the monitoring stack is up: `docker compose ps prometheus grafana`.
+
+### Stream metrics empty
+
+`redis-exporter` only collects per-stream metrics for the keys passed in
+`REDIS_EXPORTER_CHECK_STREAMS`. Streams with zero entries simply do not appear
+yet — push at least one event and refresh.
 
 ### Dashboards empty
 
-1. Verify Prometheus datasource in Grafana
-2. Check time range (last 1 hour)
-3. Generate some test traffic
-4. Review Prometheus queries
+1. Verify the Prometheus datasource in Grafana.
+2. Pick a time range with traffic (last 15 min).
+3. Generate test traffic via the load tests or `curl`.
 
-### High memory usage
+### High memory usage on Prometheus
 
 Reduce retention or sampling:
+
 ```yaml
-# In prometheus.yml
 global:
-  scrape_interval: 30s  # Increase interval
+  scrape_interval: 30s
 ```
 
-## Next Steps
+## Next steps
 
-- [Distributed Tracing with Jaeger](./tracing.md)
-- [Setting up Alerts](../errors/alerts.md)
-- [Performance Tuning](../advanced/performance.md)
+- [Distributed tracing with Jaeger](./tracing.md)

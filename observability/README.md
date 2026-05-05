@@ -1,53 +1,51 @@
-# Observability Stack for EasyHooks
+# Observability stack for EasyHooks
 
-This directory contains the complete observability implementation for the EasyHooks platform.
+This directory holds the optional observability stack: Prometheus, Grafana,
+Jaeger and `redis-exporter`. It is shipped as a separate Docker Compose file so
+production deployments can opt in (or pick a different observability surface)
+without paying the cost in development.
 
-## 🎯 What Was Implemented
+## Quick start
 
-✅ **Complete observability stack** with Prometheus, Grafana, and Jaeger
-✅ **Infrastructure monitoring** via exporters (Kafka, Redis, PostgreSQL)
-✅ **Custom application metrics** for webhooks, retries, DLQ, idempotency
-✅ **Distributed tracing** with OpenTelemetry across API → Kafka → Worker
-✅ **Pre-configured Grafana dashboards** (5 dashboards)
-✅ **Comprehensive documentation** (monitoring + tracing guides)
-✅ **Automated tests** for observability features
+```bash
+docker compose up -d                                                      # app stack
+docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d  # + monitoring
+```
 
-## 📊 Architecture
+- Prometheus: <http://localhost:9090>
+- Grafana: <http://localhost:3000> (creds from `.env`)
+- Jaeger: <http://localhost:16686>
+
+## Architecture
 
 ```
 ┌─────────────┐
-│  FastAPI    │──── /metrics ────┐
-│  App        │                   │
-└─────────────┘                   │
-                                  ▼
-┌─────────────┐            ┌──────────────┐
-│  Kafka      │───────────▶│  Prometheus  │
-│  Worker     │            │  (Metrics)   │
-└─────────────┘            └──────────────┘
-                                  │
-┌─────────────────────────┐      │
-│  Exporters:             │      │
-│  - kafka-exporter       │──────┤
-│  - redis-exporter       │      │
-│  - postgres-exporter    │──────┘
-└─────────────────────────┘      │
-                                  ▼
-                           ┌──────────────┐
-                           │   Grafana    │
-                           │ (Dashboards) │
-                           └──────────────┘
-
-┌─────────────┐
-│  App/Worker │──── OTLP ────┐
-│  (OTel SDK) │              │
-└─────────────┘              ▼
-                      ┌──────────────┐
-                      │    Jaeger    │
-                      │  (Tracing)   │
-                      └──────────────┘
+│   Go API    │──── /metrics (Prometheus) ──┐
+│   (Chi)     │                              │
+└─────────────┘                              ▼
+                                       ┌─────────────┐
+┌─────────────┐                        │ Prometheus  │
+│ Go Worker   │──── OTLP traces ──┐    │ (TSDB)      │
+└─────────────┘                    │    └──────┬──────┘
+                                   │           │
+┌─────────────────────┐            │           ▼
+│ redis-exporter      │────────────┼────▶ ┌─────────────┐
+│  (XLEN, XPENDING…)  │            │      │   Grafana   │
+└─────────────────────┘            │      │ (Dashboards)│
+                                   ▼      └─────────────┘
+                            ┌─────────────┐
+                            │   Jaeger    │
+                            │ (Tracing)   │
+                            └─────────────┘
 ```
 
-## 📁 Directory Structure
+Both `easyhooks` (API) and `easyhooks-worker` push OTLP spans to the Jaeger
+collector. Prometheus scrapes `app:8000/metrics` and `redis-exporter:9121` —
+the latter is configured (`REDIS_EXPORTER_CHECK_STREAMS=events:in,events:failed`)
+to expose `redis_stream_length` and `redis_stream_group_pending` for the work
+queue and DLQ streams.
+
+## Directory layout
 
 ```
 observability/
@@ -55,302 +53,145 @@ observability/
 │   └── prometheus.yml          # Prometheus configuration
 ├── grafana/
 │   ├── provisioning/
-│   │   ├── datasources/
-│   │   │   └── datasources.yml # Auto-provision Prometheus + Jaeger
-│   │   └── dashboards/
-│   │       └── dashboards.yml  # Dashboard provisioning config
+│   │   ├── datasources/        # Auto-provisions Prometheus + Jaeger
+│   │   └── dashboards/         # Dashboard provisioning config
 │   └── dashboards/
-│       ├── README.md           # Dashboard documentation
-│       ├── 01-overview.json    # Main overview dashboard
-│       └── 02-kafka.json       # Kafka metrics dashboard
+│       ├── README.md
+│       ├── 01-overview.json    # System-wide overview
+│       ├── 02-streams.json     # Redis Streams (replaces the old Kafka view)
+│       └── 03-loadtest.json    # Load testing dashboard
 └── README.md                   # This file
 ```
 
-## 🚀 Quick Start
+## Key metrics to watch
 
-### 1. Start the Stack
+| Metric | Purpose | Healthy |
+| --- | --- | --- |
+| `redis_stream_group_pending{stream="events:in",group="webhook-workers"}` | Worker backlog | < 100 |
+| `redis_stream_length{stream="events:failed"}` | DLQ depth | flat / 0 |
+| `rate(stream_consume_total[5m])` | Worker throughput | matches publish rate |
+| `rate(webhook_dlq_total[5m]) / rate(stream_consume_total[5m])` | DLQ ratio | < 1 % |
+| `histogram_quantile(0.95, rate(webhook_processing_duration_seconds_bucket[5m]))` | Processing p95 | < 200 ms |
+| `websocket_connections_active` | WS connections per tenant | n/a |
 
-```bash
-docker compose up -d
-```
+### Application metrics (exposed on `/metrics`)
 
-All observability services start automatically:
-- Prometheus: http://localhost:9090
-- Grafana: http://localhost:3000 (admin/admin)
-- Jaeger: http://localhost:16686
+- `webhook_requests_total` — by tenant + status
+- `webhook_processing_duration_seconds` — histogram
+- `webhook_retries_total` — by attempt
+- `webhook_dlq_total` — DLQ counter
+- `idempotency_duplicates_total` — duplicates dropped
+- `websocket_connections_active`, `websocket_messages_sent_total`,
+  `websocket_e2e_latency_seconds`
+- `redis_operations_total` — per operation/status
+- `stream_publish_total` — XADD on the work queue (success/error)
+- `stream_consume_total` — XREADGROUP on the work queue
+- `http_request_duration_seconds`, `http_requests_total`
 
-### 2. Access Dashboards
+## Distributed tracing
 
-Open Grafana and navigate to "EasyHooks" folder in the sidebar.
+Spans across the request flow:
 
-### 3. Generate Test Traffic
-
-```bash
-# Create a tenant
-curl -X POST http://localhost:8000/admin/tenants \
-  -H "Authorization: Bearer $ADMIN_SEED_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"Test Tenant"}'
-
-# Send webhooks
-# (see main README for full examples)
-```
-
-### 4. View Metrics
-
-- **Prometheus**: http://localhost:9090/graph
-- **Grafana**: http://localhost:3000
-- **Jaeger**: http://localhost:16686
-
-## 📈 Key Metrics
-
-### Critical Metrics to Monitor
-
-| Metric | Description | Query | Healthy Range |
-|--------|-------------|-------|---------------|
-| **Kafka Lag** | Messages waiting to be processed | `kafka_consumergroup_lag` | < 100 |
-| **Error Rate** | Failed webhooks (DLQ) | `rate(webhook_dlq_total[5m])` | < 1% |
-| **Processing Duration p95** | 95th percentile latency | `histogram_quantile(0.95, rate(webhook_processing_duration_seconds_bucket[5m]))` | < 200ms |
-| **Active WebSocket Connections** | Real-time connections | `websocket_connections_active` | - |
-
-### All Available Metrics
-
-#### Application Metrics
-
-- `webhook_requests_total` — Total webhook requests (by tenant, status)
-- `webhook_processing_duration_seconds` — Processing time histogram
-- `webhook_retries_total` — Retry attempts (by attempt number)
-- `webhook_dlq_total` — Events sent to Dead Letter Queue
-- `idempotency_duplicates_total` — Duplicate events detected
-- `websocket_connections_active` — Active WS connections (gauge)
-- `websocket_messages_sent_total` — Messages sent via WebSocket
-- `redis_operations_total` — Redis operations counter
-- `kafka_produce_total` — Messages produced to Kafka
-- `kafka_consume_total` — Messages consumed from Kafka
-- `http_request_duration_seconds` — HTTP request latency
-- `http_requests_total` — HTTP request counter
-
-#### Infrastructure Metrics (from exporters)
-
-- `kafka_consumergroup_lag` — **Most critical!** Consumer lag
-- `kafka_consumergroup_current_offset` — Current offset position
-- `redis_commands_total` — Redis commands/sec
-- `redis_memory_used_bytes` — Redis memory usage
-- `pg_stat_database_*` — PostgreSQL statistics
-
-## 🔍 Distributed Tracing
-
-### Trace Flow
-
-A complete webhook trace includes:
-
-1. `webhook.ingest` — API receives request
+1. `webhook.ingest` — API receives the request
 2. `webhook.validate_hmac` — HMAC validation
-3. `webhook.produce_kafka` — Send to Kafka
-4. `webhook.process` — Worker processes
-5. `webhook.idempotency_check` — Check for duplicates
-6. `webhook.business_handler` — Core processing
-7. `webhook.publish_redis` — Publish to Redis
-8. `websocket.send` — Deliver to client
+3. `webhook.publish_stream` — `XADD events:in`
+4. `webhook.process` — Worker picks up the entry
+5. `webhook.idempotency_check` — `SET NX event_lock:{event_id}`
+6. `webhook.business_handler` — Fan-out / business logic
+7. `webhook.publish_redis` — `XADD stream:tenant:{uuid}`
+8. `webhook.dispatch_to_dlq` — Only when retries are exhausted
+9. `websocket.send` — Delivery to the client
 
-### Using Jaeger
+Filter in Jaeger by `tenant_id`, `event_id` or `error=true`.
 
-1. Open http://localhost:16686
-2. Select service: `easyhooks` or `easyhooks-worker`
-3. Search by:
-   - Tenant ID: `tenant_id=xxx`
-   - Event ID: `event_id=evt-001`
-   - Errors: `error=true`
-   - Duration: Min/Max filters
+## Configuration
 
-## 📊 Grafana Dashboards
+### Prometheus
 
-### Available Dashboards
+`observability/prometheus/prometheus.yml` defines two scrape jobs:
 
-1. **EasyHooks Overview** (`01-overview.json`)
-   - System-wide metrics
-   - Request rates
-   - Processing latency (p50, p95, p99)
-   - Error rates
-   - Active connections
+- `easyhooks-api` → `app:8000/metrics`
+- `redis-exporter` → `redis-exporter:9121`
 
-2. **Kafka Metrics** (`02-kafka.json`)
-   - **Consumer lag** (critical!)
-   - Throughput (produced vs consumed)
-   - Offset progression
-   - Partition metrics
+Add new jobs (alertmanager, additional exporters) by appending to the file and
+reloading Prometheus (`POST /-/reload` or restart the container).
 
-3-5. **Additional dashboards** can be created in Grafana UI and exported to this directory.
+### Grafana
 
-### Creating Custom Dashboards
+Datasources and dashboards are auto-provisioned from
+`observability/grafana/provisioning/`. Edit dashboards in the UI, export the
+JSON model, save it back into `observability/grafana/dashboards/` and restart
+the container — they are picked up on the next reload.
 
-1. Open Grafana at http://localhost:3000
-2. Create dashboard using visual editor
-3. Export JSON: Dashboard settings → JSON Model
-4. Save to `observability/grafana/dashboards/`
-5. Restart Grafana or wait for auto-reload
-
-## 🔧 Configuration
-
-### Environment Variables
-
-Set in `.env`:
+### Application toggles
 
 ```bash
-# Observability
 METRICS_ENABLED=true
 TRACING_ENABLED=true
 OTEL_SERVICE_NAME=easyhooks
 OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
-TRACING_SAMPLE_RATE=1.0  # 100% in dev, 0.1-0.2 in prod
+TRACING_SAMPLE_RATE=1.0   # 100% in dev, 0.1–0.2 in production
 ```
 
-### Prometheus Configuration
+## Alerting (production)
 
-Edit `observability/prometheus/prometheus.yml` to:
-- Change scrape intervals
-- Add new targets
-- Configure alerting rules
-- Adjust retention
-
-### Grafana Datasources
-
-Edit `observability/grafana/provisioning/datasources/datasources.yml` to:
-- Add new datasources
-- Change endpoints
-- Configure authentication
-
-## 🧪 Testing
-
-Run observability tests:
-
-```bash
-pytest tests/test_observability.py -v
-```
-
-Tests verify:
-- Metrics endpoint is accessible
-- Prometheus format is correct
-- Metrics can be incremented
-- Tracing setup works
-- Span creation functions
-
-## 🚨 Alerting (Production)
-
-For production, configure Prometheus alerts:
+Suggested starting rules:
 
 ```yaml
-# prometheus/alerts.yml
 groups:
   - name: easyhooks_critical
     rules:
-      - alert: HighKafkaLag
-        expr: kafka_consumergroup_lag > 1000
+      - alert: HighWorkerBacklog
+        expr: redis_stream_group_pending{stream="events:in",group="webhook-workers"} > 1000
         for: 5m
         annotations:
-          summary: "Kafka lag too high"
-          
-      - alert: HighErrorRate
-        expr: rate(webhook_dlq_total[5m]) / rate(kafka_consume_total[5m]) > 0.05
+          summary: "Worker backlog above 1k pending entries"
+
+      - alert: HighDLQRatio
+        expr: rate(webhook_dlq_total[5m]) / rate(stream_consume_total[5m]) > 0.05
         for: 5m
         annotations:
-          summary: "Error rate > 5%"
+          summary: "DLQ ratio above 5%"
+
+      - alert: DLQGrowing
+        expr: increase(redis_stream_length{stream="events:failed"}[10m]) > 0
+        for: 10m
+        annotations:
+          summary: "Events keep landing in events:failed"
 ```
 
-## 📚 Documentation
+## Troubleshooting
 
-- **Main docs**: http://localhost:3001/observability/monitoring
-- **Monitoring guide**: `docs/docs/observability/monitoring.md`
-- **Tracing guide**: `docs/docs/observability/tracing.md`
-- **Dashboard README**: `observability/grafana/dashboards/README.md`
+### Metrics missing
 
-## 🎓 Best Practices
+1. Check Prometheus targets at <http://localhost:9090/targets> — both
+   `easyhooks-api` and `redis-exporter` should be `UP`.
+2. `curl http://localhost:8000/metrics` from your host to confirm the API is
+   exposing them.
 
-### Development
+### Stream metrics empty
 
-- ✅ Keep sampling rate at 100% (`TRACING_SAMPLE_RATE=1.0`)
-- ✅ Monitor dashboards during testing
-- ✅ Use traces to debug issues
-- ✅ Check metrics after code changes
+`redis-exporter` only collects per-stream metrics for the keys passed in
+`REDIS_EXPORTER_CHECK_STREAMS`. Streams that have not received any entry yet
+will simply be missing — push at least one event and they appear.
 
-### Production
+### Traces missing
 
-- ⚠️ Lower sampling rate to 10-20% (`TRACING_SAMPLE_RATE=0.1`)
-- ⚠️ Set up persistent storage for Prometheus/Jaeger
-- ⚠️ Configure alerting for critical metrics
-- ⚠️ Monitor Kafka lag continuously
-- ⚠️ Review metrics daily for trends
+1. `TRACING_ENABLED=true` is set.
+2. Jaeger is running (`docker compose ps jaeger`).
+3. The application can reach `OTEL_EXPORTER_OTLP_ENDPOINT` — both API and
+   worker log a warning if init fails.
 
-## 🐛 Troubleshooting
+## Versions
 
-### Metrics not appearing
+- Prometheus 2.51.0
+- Grafana 10.4.0
+- Jaeger 1.55
+- redis-exporter 1.58.0
 
-1. Check Prometheus targets: http://localhost:9090/targets
-2. Verify all targets show "UP"
-3. Check app logs: `docker compose logs app`
-4. Ensure metrics endpoint works: `curl http://localhost:8000/metrics`
+## Further reading
 
-### Dashboards empty
-
-1. Verify Prometheus datasource in Grafana
-2. Check time range (use "Last 1 hour")
-3. Generate test traffic
-4. Review queries in dashboard panels
-
-### Traces not showing
-
-1. Check tracing is enabled: `TRACING_ENABLED=true`
-2. Verify Jaeger is running: `docker compose ps jaeger`
-3. Check OTLP endpoint: `curl http://localhost:4317`
-4. Look for errors in app logs
-
-### High resource usage
-
-**Prometheus:**
-- Increase scrape interval: `scrape_interval: 30s`
-- Reduce retention: `--storage.tsdb.retention.time=7d`
-
-**Tracing:**
-- Lower sampling rate: `TRACING_SAMPLE_RATE=0.1`
-- Disable for health checks
-
-**Grafana:**
-- Reduce refresh rate on dashboards
-- Limit dashboard time range
-
-## 📦 Components Version
-
-- Prometheus: v2.51.0
-- Grafana: 10.4.0
-- Jaeger: 1.55
-- kafka-exporter: v1.7.0
-- redis-exporter: v1.58.0
-- postgres-exporter: v0.15.0
-
-## 🤝 Contributing
-
-When adding new metrics:
-
-1. Define in `src/observability/metrics.py`
-2. Instrument code appropriately
-3. Add to Grafana dashboards
-4. Document in monitoring.md
-5. Add tests in test_observability.py
-
-When adding traces:
-
-1. Use `trace_span()` context manager
-2. Add meaningful attributes
-3. Document expected spans
-4. Update tracing.md
-
-## 📖 Further Reading
-
-- [Prometheus Best Practices](https://prometheus.io/docs/practices/)
-- [Grafana Dashboard Design](https://grafana.com/docs/grafana/latest/dashboards/)
-- [OpenTelemetry Python](https://opentelemetry.io/docs/instrumentation/python/)
-- [Jaeger Architecture](https://www.jaegertracing.io/docs/latest/architecture/)
-
----
-
-**Built with ❤️ for production-grade observability**
+- [Prometheus best practices](https://prometheus.io/docs/practices/)
+- [Grafana dashboard design](https://grafana.com/docs/grafana/latest/dashboards/)
+- [OpenTelemetry Go](https://opentelemetry.io/docs/languages/go/)
+- [Redis Streams reference](https://redis.io/docs/data-types/streams/)

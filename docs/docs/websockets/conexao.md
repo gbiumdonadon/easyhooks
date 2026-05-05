@@ -12,15 +12,15 @@ Cada tenant tem um **canal exclusivo** de WebSocket no qual recebe os eventos pu
 ```mermaid
 sequenceDiagram
     participant C as Cliente
-    participant API as FastAPI
-    participant R as Redis Pub/Sub
+    participant API as Go API
+    participant T as stream:tenant:{id}
     participant W as Worker
     C->>API: POST /v1/tokens/{tenant_id} (Bearer)
     API-->>C: { token, expires_in: 300 }
     C->>API: WS /ws/events/{tenant_id}?token=<token>
     API-->>C: 101 Switching Protocols
-    W->>R: PUBLISH tenant_events:{tenant_id} (...)
-    R-->>API: message
+    W->>T: XADD payload
+    T-->>API: XREAD BLOCK
     API-->>C: send_text(<json>)
 ```
 

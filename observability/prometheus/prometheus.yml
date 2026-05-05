@@ -10,23 +10,13 @@ scrape_configs:
     static_configs:
       - targets: ['localhost:9090']
 
-  - job_name: 'fastapi-app'
+  - job_name: 'easyhooks-api'
     static_configs:
       - targets: ['app:8000']
     metrics_path: '/metrics'
     scrape_interval: 10s
 
-  - job_name: 'kafka-exporter'
-    static_configs:
-      - targets: ['kafka-exporter:9308']
-    scrape_interval: 15s
-
   - job_name: 'redis-exporter'
     static_configs:
       - targets: ['redis-exporter:9121']
-    scrape_interval: 15s
-
-  - job_name: 'postgres-exporter'
-    static_configs:
-      - targets: ['postgres-exporter:9187']
     scrape_interval: 15s

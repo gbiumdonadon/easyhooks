@@ -1,26 +1,17 @@
-__pycache__/
-*.py[cod]
-*$py.class
-*.egg-info/
+# Go
+bin/
 dist/
-build/
-.eggs/
-*.egg
+*.exe
+*.test
+*.out
+coverage.out
+vendor/
+
 .env
 .env.local
 .env.*.local
-.venv/
-venv/
-env/
 *.db
 *.sqlite3
-.pytest_cache/
-.coverage
-htmlcov/
-
-# Docker volumes
-pgdata/
-kafka-logs/
 
 # Docusaurus
 docs/build/
@@ -51,3 +42,13 @@ yarn-error.log*
 # Load testing — tenant credentials and generated reports must never be committed
 load_tests/.tenant_pool.json
 load_tests/reports/
+
+# Docker volume bind mounts (named volumes are gitignored by docker; this is
+# defensive coverage in case a contributor switches to a bind mount layout)
+redis-data/
+prometheus-data/
+grafana-data/
+
+# Test artifacts (Go)
+*.cover
+profile.out

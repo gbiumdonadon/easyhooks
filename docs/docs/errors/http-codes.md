@@ -9,22 +9,29 @@ description: HTTP status codes returned by the API.
 
 ## Success
 
-- **200 OK** — Request successful, body contains data
-- **201 Created** — Resource created successfully
-- **202 Accepted** — Event accepted and queued
+- **200 OK** — Request successful, body contains data.
+- **201 Created** — Resource created successfully (e.g. a new tenant).
+- **202 Accepted** — Event accepted and appended to the `events:in` Redis Stream.
 
-## Client Errors
+## Client errors
 
-- **400 Bad Request** — Malformed request (missing required header, invalid JSON)
-- **401 Unauthorized** — Missing credentials
-- **403 Forbidden** — Invalid credentials or cross-tenant access attempt
-- **404 Not Found** — Resource doesn't exist
-- **422 Unprocessable Entity** — Invalid UUID or non-parseable JSON
+- **400 Bad Request** — Malformed request: invalid `tenant_id` UUID, missing `X-Event-Id` header or invalid JSON body.
+- **401 Unauthorized** — Missing credentials, or admin token has not been seeded yet (`Admin not provisioned`).
+- **403 Forbidden** — Invalid credentials, wrong HMAC signature, or cross-tenant access attempt.
+- **404 Not Found** — Resource doesn't exist.
 
-## Server Errors
+## Server errors
 
-- **500 Internal Server Error** — Unexpected server error
-- **503 Service Unavailable** — Dependent service (Kafka, Redis, Postgres) unavailable
+- **500 Internal Server Error** — Unexpected server error (for example an XADD failure on `events:in`).
+- **503 Service Unavailable** — Redis is unreachable or the admin bootstrap step has not finished yet.
+
+All error responses include a JSON body:
+
+```json
+{
+  "detail": "Human-readable error message"
+}
+```
 
 All error responses include a JSON body:
 

@@ -3,45 +3,43 @@ id: intro
 title: Visão Geral
 slug: /
 sidebar_position: 0
-description: Visão geral da Easyhooks — ingestão multi-tenant, processamento idempotente e distribuição em tempo real.
+description: Visão geral da Easyhooks — ingestão multi-tenant, processamento idempotente e distribuição em tempo real sobre uma stack apenas com Redis.
 ---
 
 # Easyhooks
 
-Plataforma multi-tenant de **ingestão, processamento idempotente e distribuição em tempo real** de webhooks. Pensada para receber eventos de múltiplos clientes, garantir entrega *at-least-once* (com exactly-once interno), e empurrar os eventos processados para frontends e sistemas downstream via WebSocket.
+Plataforma multi-tenant de **ingestão, processamento idempotente e distribuição em tempo real** de webhooks, construída sobre uma stack **apenas com Redis**. Pensada para receber eventos de múltiplos clientes, garantir entrega *at-least-once* (com exactly-once interno via locks de idempotência), e empurrar os eventos processados para frontends e sistemas downstream via WebSocket.
 
 ## Arquitetura em alto nível
 
 ```mermaid
 flowchart LR
-    Admin[Admin] -->|"POST /admin/tenants"| API[FastAPI]
-    API -->|"tenant_id + secret"| Admin
+    Admin[Admin] -->|"POST /admin/tenants"| API[Go API ·Chi·]
     Cliente[Cliente] -->|"POST /v1/webhooks/:id<br/>+ HMAC"| API
-    API -->|"webhooks.inbound"| Kafka[(Kafka)]
-    Kafka --> Worker[Worker]
-    Worker -->|"PUBLISH<br/>tenant_events:id"| Redis[(Redis Pub/Sub)]
-    Worker -->|"falha 3x"| DLQ[(webhooks.dlq)]
+    API -->|XADD| EventsIn[("events:in (Redis Stream)")]
+    EventsIn -->|XREADGROUP| Worker[Go Worker]
+    Worker -->|"SET NX event_lock"| Redis[(Redis)]
+    Worker -->|"XADD por-tenant"| TenantStream[("stream:tenant:id")]
+    Worker -->|"XADD em falha permanente"| EventsFailed[("events:failed (DLQ)")]
+    Worker -->|XACK| EventsIn
     Cliente -->|"POST /v1/tokens/:id"| API
-    API -->|"WS token"| Cliente
     Cliente -->|"WS /ws/events/:id"| API
-    Redis --> API
+    TenantStream -->|XREAD| API
     API -->|"send_text"| Cliente
 ```
 
 ## Componentes
 
-- **API (`app`)** — FastAPI; expõe Admin API, ingestor, emissor de tokens WS e endpoint WebSocket.
-- **Worker** — Consumidor Kafka dedicado; aplica idempotência (Redis), retry exponencial, DLQ e publicação no Pub/Sub.
-- **Postgres** — Persistência de tenants e admins.
-- **Redis** — Cache de credenciais (`tenant_auth:{id}`, `tenant_hmac_key:{id}`), locks de idempotência (`event_lock:{event_id}`) e canais Pub/Sub (`tenant_events:{id}`).
-- **Kafka** — Buffer de eventos: `webhooks.inbound` (entrada) + `webhooks.dlq` (Dead Letter Queue).
+- **API (`app`)** — Go/Chi. Expõe a Admin API, o ingestor de webhooks, o emissor de tokens WS e o endpoint WebSocket. No startup, faz seed do token de admin e garante o consumer group da fila de trabalho.
+- **Worker** — Consumidor de Redis Streams (`XREADGROUP > events:in`). Aplica lock de idempotência, retry exponencial, fan-out para os streams por tenant e roteia falhas terminais para `events:failed`.
+- **Redis** — Único datastore. Guarda o hash do token de admin (`admin:token_hash`), credenciais de tenants (`tenant_auth:{id}` / `tenant_hmac_key:{id}`), locks de idempotência (`event_lock:{event_id}`), a fila de trabalho (`events:in` / `events:failed`) e os streams por tenant (`stream:tenant:{id}`). Persistência AOF + RDB ligada por padrão para que credenciais e DLQ sobrevivam a reinícios.
 
 ## Garantias
 
-- **Multi-tenancy isolado** — Cada tenant tem credenciais únicas e canal Pub/Sub próprio. Tentativas cross-tenant são rejeitadas com `403`.
-- **Idempotência** — Mesmo `X-Event-Id` enviado N vezes é processado apenas 1.
-- **Resiliência** — Até 3 tentativas de processamento com backoff exponencial; falhas terminais vão para DLQ com headers preservados.
-- **Tempo real** — Eventos processados são publicados no Redis Pub/Sub e entregues a clientes WebSocket conectados em milissegundos.
+- **Multi-tenancy isolado** — Cada tenant tem credenciais únicas e um stream próprio. Tentativas cross-tenant são rejeitadas com `403`.
+- **Idempotência** — O mesmo `X-Event-Id` enviado N vezes é processado apenas 1 vez graças a um `SET NX`.
+- **Resiliência** — Até `WORKER_MAX_RETRIES` tentativas (padrão 3) com backoff exponencial; falhas terminais vão para `events:failed` com o erro original no campo `x_original_error`.
+- **Tempo real** — Eventos processados são adicionados a `stream:tenant:{id}` e entregues a clientes WebSocket conectados em milissegundos via `XREAD BLOCK`.
 - **Segurança** — HMAC-SHA256 sobre o body bruto + tokens efêmeros para WebSocket (HMAC do `APP_SECRET_KEY`).
 
 ## Por onde começar
@@ -51,15 +49,12 @@ flowchart LR
 3. **[API Reference → Ingestor](./api-reference/ingestor.md)** — referência completa do endpoint principal.
 4. **[API Reference → Segurança HMAC](./api-reference/seguranca-hmac.md)** — implemente assinatura segura com exemplos em Python, Node, bash e Go.
 5. **[WebSockets → Conexão](./websockets/conexao.md)** — receba eventos em tempo real.
-6. **[Erros e DLQ → Retentativas](./errors/retentativas-dlq.md)** — entenda a política de retry e como inspecionar a DLQ.
+6. **[Erros e DLQ → Retentativas](./errors/retentativas-dlq.md)** — entenda a política de retry e como inspecionar a `events:failed`.
 
 ## Stack
 
-- **Linguagem:** Python 3.12
-- **Framework:** FastAPI + Uvicorn
-- **ORM:** SQLAlchemy (asyncio)
-- **Mensageria:** Apache Kafka (`aiokafka`)
-- **Cache / Pub-Sub:** Redis 7+
-- **Banco:** PostgreSQL 16+
-- **Testes:** `pytest`, `pytest-asyncio`, `httpx`, `httpx-ws`, `testcontainers[kafka]`
-- **Infra:** Docker Compose
+- **Linguagem:** Go 1.26 (toolchain auto)
+- **Framework:** Chi (`go-chi/chi`) + `net/http`
+- **Datastore / fila de trabalho:** Redis 7 (`go-redis/v9`) — Redis Streams para a fila e para o fan-out por tenant
+- **Testes:** `testing` + `testify` + `miniredis` (`go test ./...` em `go-api/`)
+- **Infra:** Docker Compose (`docker-compose.yml` para o app, `docker-compose.monitoring.yml` opcional para Prometheus/Grafana/Jaeger)

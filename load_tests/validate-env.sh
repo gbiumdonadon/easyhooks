@@ -120,7 +120,7 @@ if [[ -f "$TENANT_POOL_FILE" ]]; then
   fi
 else
   echo "  ${YELLOW}⚠${NC}  Tenant pool não existe em $TENANT_POOL_FILE"
-  echo "     Será criado automaticamente durante o teste"
+  echo "     Crie com: cd load_tests && bash scripts/create_tenant_pool.sh"
 fi
 
 echo ""

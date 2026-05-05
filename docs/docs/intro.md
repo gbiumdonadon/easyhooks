@@ -3,46 +3,44 @@ id: intro
 title: Overview
 slug: /
 sidebar_position: 0
-description: Overview of Easyhooks — multi-tenant ingestion, idempotent processing, and real-time distribution.
+description: Overview of Easyhooks — multi-tenant ingestion, idempotent processing, and real-time distribution on a Redis-only stack.
 ---
 
 # Easyhooks
 
-Multi-tenant platform for **ingestion, idempotent processing, and real-time distribution** of webhooks. Designed to receive events from multiple clients, guarantee *at-least-once* delivery (with internal exactly-once), and push processed events to frontends and downstream systems via WebSocket.
+Multi-tenant platform for **ingestion, idempotent processing, and real-time distribution** of webhooks, built on a **Redis-only** stack. Designed to receive events from multiple clients, guarantee *at-least-once* delivery (with internal exactly-once via idempotency locks), and push processed events to frontends and downstream systems via WebSocket.
 
 ## High-Level Architecture
 
 ```mermaid
 flowchart LR
-    Admin[Admin] -->|"POST /admin/tenants"| API[FastAPI]
-    API -->|"tenant_id + secret"| Admin
+    Admin[Admin] -->|"POST /admin/tenants"| API[Go API ·Chi·]
     Client[Client] -->|"POST /v1/webhooks/:id<br/>+ HMAC"| API
-    API -->|"webhooks.inbound"| Kafka[(Kafka)]
-    Kafka --> Worker[Worker]
-    Worker -->|"PUBLISH<br/>tenant_events:id"| Redis[(Redis Pub/Sub)]
-    Worker -->|"3x failure"| DLQ[(webhooks.dlq)]
+    API -->|XADD| EventsIn[("events:in (Redis Stream)")]
+    EventsIn -->|XREADGROUP| Worker[Go Worker]
+    Worker -->|"SET NX event_lock"| Redis[(Redis)]
+    Worker -->|"XADD per-tenant"| TenantStream[("stream:tenant:id")]
+    Worker -->|"XADD on permanent failure"| EventsFailed[("events:failed (DLQ)")]
+    Worker -->|XACK| EventsIn
     Client -->|"POST /v1/tokens/:id"| API
-    API -->|"WS token"| Client
     Client -->|"WS /ws/events/:id"| API
-    Redis --> API
+    TenantStream -->|XREAD| API
     API -->|"send_text"| Client
 ```
 
 ## Components
 
-- **API (`app`)** — FastAPI; exposes Admin API, webhook ingestor, WS token issuer, and WebSocket endpoint.
-- **Worker** — Dedicated Kafka consumer; applies idempotency (Redis), exponential retry, DLQ, and Pub/Sub publishing.
-- **Postgres** — Persistence for tenants and admins.
-- **Redis** — Credentials cache (`tenant_auth:{id}`, `tenant_hmac_key:{id}`), idempotency locks (`event_lock:{event_id}`), and Pub/Sub channels (`tenant_events:{id}`).
-- **Kafka** — Event buffer: `webhooks.inbound` (input) + `webhooks.dlq` (Dead Letter Queue).
+- **API (`app`)** — Go/Chi. Exposes the Admin API, the webhook ingestor, the WS token issuer and the WebSocket endpoint. On startup it seeds the bootstrap admin token and ensures the work-queue consumer group exists.
+- **Worker** — Redis Streams consumer (`XREADGROUP > events:in`). Applies idempotency locks, exponential retry, fan-out to per-tenant streams, and routes permanent failures to `events:failed`.
+- **Redis** — Sole datastore. Holds the bootstrap admin token hash (`admin:token_hash`), tenant credentials (`tenant_auth:{id}` / `tenant_hmac_key:{id}`), idempotency locks (`event_lock:{event_id}`), the work queue (`events:in` / `events:failed`) and the per-tenant fan-out streams (`stream:tenant:{id}`). AOF + RDB persistence are enabled by default so credentials and DLQ entries survive restarts.
 
 ## Guarantees
 
-- **Isolated Multi-tenancy** — Each tenant has unique credentials and its own Pub/Sub channel. Cross-tenant attempts are rejected with `403`.
-- **Idempotency** — Same `X-Event-Id` sent N times is processed only once.
-- **Resilience** — Up to 3 processing attempts with exponential backoff; terminal failures go to DLQ with preserved headers.
-- **Real-time** — Processed events are published to Redis Pub/Sub and delivered to connected WebSocket clients in milliseconds.
-- **Security** — HMAC-SHA256 over raw body + ephemeral tokens for WebSocket (HMAC of `APP_SECRET_KEY`).
+- **Isolated multi-tenancy** — Each tenant has unique credentials and its own per-tenant Redis Stream. Cross-tenant attempts are rejected with `403`.
+- **Idempotency** — Same `X-Event-Id` sent N times is processed only once thanks to a `SET NX` lock.
+- **Resilience** — Up to `WORKER_MAX_RETRIES` attempts (default 3) with exponential backoff; terminal failures go to the `events:failed` stream with the original error attached as the field `x_original_error`.
+- **Real-time** — Processed events are appended to `stream:tenant:{id}` and delivered to connected WebSocket clients in milliseconds via `XREAD BLOCK`.
+- **Security** — HMAC-SHA256 over the raw body + ephemeral tokens for WebSocket (HMAC of `APP_SECRET_KEY`).
 
 ## Getting Started
 
@@ -51,15 +49,12 @@ flowchart LR
 3. **[API Reference → Ingestor](./api-reference/ingestor.md)** — complete reference of the main endpoint.
 4. **[API Reference → HMAC Security](./api-reference/hmac-security.md)** — implement secure signing with examples in Python, Node, bash, and Go.
 5. **[WebSockets → Connection](./websockets/connection.md)** — receive real-time events.
-6. **[Errors & DLQ → Retries](./errors/retries-dlq.md)** — understand retry policy and how to inspect the DLQ.
+6. **[Errors & DLQ → Retries](./errors/retries-dlq.md)** — understand the retry policy and how to inspect `events:failed`.
 
 ## Stack
 
-- **Language:** Python 3.12
-- **Framework:** FastAPI + Uvicorn
-- **ORM:** SQLAlchemy (asyncio)
-- **Messaging:** Apache Kafka (`aiokafka`)
-- **Cache / Pub-Sub:** Redis 7+
-- **Database:** PostgreSQL 16+
-- **Tests:** `pytest`, `pytest-asyncio`, `httpx`, `httpx-ws`, `testcontainers[kafka]`
-- **Infrastructure:** Docker Compose
+- **Language:** Go 1.26 (toolchain auto)
+- **Framework:** Chi (`go-chi/chi`) + `net/http` stdlib
+- **Datastore / work queue:** Redis 7 (`go-redis/v9`) — Redis Streams for both the work queue and the per-tenant fan-out
+- **Tests:** `testing` stdlib + `testify` + `miniredis`
+- **Infrastructure:** Docker Compose (`docker-compose.yml` for the app stack, `docker-compose.monitoring.yml` for the optional Prometheus/Grafana/Jaeger stack)

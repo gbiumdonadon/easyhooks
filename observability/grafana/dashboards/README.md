@@ -1,103 +1,88 @@
 # Grafana Dashboards for EasyHooks
 
-This directory contains pre-configured Grafana dashboards for monitoring the EasyHooks platform.
+Pre-configured dashboards for monitoring the Redis-only EasyHooks platform.
 
 ## Available Dashboards
 
-### 1. EasyHooks Overview (01-overview.json)
-Main dashboard showing system-wide metrics:
-- Webhook requests per second
+### 1. EasyHooks Overview (`01-overview.json`)
+System-wide health view:
+- Webhook requests per second (HTTP)
 - Processing duration (p50, p95, p99)
-- Error rates
+- DLQ ratio (`webhook_dlq_total / stream_consume_total`)
 - Active WebSocket connections
-- System health status
+- Worker error rates
 
-### 2. Kafka Metrics (02-kafka.json)
-Critical Kafka monitoring:
-- **Consumer Lag** (most important metric!)
-- Messages produced vs consumed
-- Offset progression by partition
-- Consumer group rebalancing events
+### 2. Redis Streams Metrics (`02-streams.json`)
+The replacement for the old Kafka dashboard, focused on the work queue:
+- **Worker Backlog** — `redis_stream_group_pending{stream="events:in",group="webhook-workers"}` (single most important metric: how many entries the worker has not acked yet).
+- **Stream Throughput** — published vs consumed rate (`stream_publish_total` / `stream_consume_total`).
+- **Stream Length (XLEN)** — `redis_stream_length{stream="events:in"}` and `events:failed` (DLQ).
 
-### 3. Worker Processing (03-worker.json)
-Worker-specific metrics:
-- Events processed vs failed
-- Retry distribution (1st, 2nd, 3rd attempts)
-- DLQ rate and error types
-- Idempotency duplicate detection
-- Processing duration histograms
+### 3. Load Test (`03-loadtest.json`)
+Throughput and latency view used while running k6 scenarios. The "Stream Pending Backlog" panel surfaces XPENDING for the ingestion stream during sustained load.
 
-### 4. Infrastructure (04-infrastructure.json)
-Infrastructure components:
-- Redis: Commands/sec, latency, memory usage, connections
-- PostgreSQL: Active connections, queries/sec, cache hit ratio
-- Kafka: Disk usage, broker status
+## How dashboards are loaded
 
-### 5. WebSockets (05-websockets.json)
-Real-time distribution metrics:
-- Active connections by tenant
-- Messages sent per second
-- Connection/disconnection rates
-- Message delivery latency
+Dashboards are mounted into Grafana by `docker-compose.monitoring.yml`. They are
+provisioned automatically from this directory. To create or update one:
 
-## Creating Dashboards
+1. Edit visually in Grafana at <http://localhost:3000>.
+2. Export the dashboard JSON (Dashboard settings → JSON Model).
+3. Save back to this directory and restart the `grafana` service.
 
-The dashboards are provisioned automatically from this directory. To create or update:
+## Useful PromQL snippets
 
-1. **Using Grafana UI:**
-   - Open Grafana at http://localhost:3000
-   - Create/edit dashboard visually
-   - Export JSON (Dashboard settings → JSON Model)
-   - Save to this directory
+### Worker backlog (CRITICAL)
 
-2. **Key Queries to Use:**
-
-### Webhook Request Rate
 ```promql
-rate(http_requests_total{endpoint="/v1/webhooks"}[5m])
+redis_stream_group_pending{stream="events:in", group="webhook-workers"}
 ```
 
-### Kafka Consumer Lag (CRITICAL!)
+### Stream length (queue depth)
+
 ```promql
-kafka_consumergroup_lag{consumergroup="webhook-workers"}
+redis_stream_length{stream="events:in"}
+redis_stream_length{stream="events:failed"}
 ```
 
-### Processing Duration p95
-```promql
-histogram_quantile(0.95, rate(webhook_processing_duration_seconds_bucket[5m]))
-```
+### DLQ rate
 
-### DLQ Rate
 ```promql
 rate(webhook_dlq_total[5m])
 ```
 
-### Retry Distribution
+### Throughput
+
 ```promql
-sum by (attempt) (rate(webhook_retries_total[5m]))
+rate(stream_publish_total{stream="events:in",status="success"}[5m])
+rate(stream_consume_total{stream="events:in"}[5m])
 ```
 
-### Active WebSocket Connections
+### Processing latency p95
+
+```promql
+histogram_quantile(0.95, rate(webhook_processing_duration_seconds_bucket[5m]))
+```
+
+### Active WebSocket connections
+
 ```promql
 websocket_connections_active
 ```
 
-### Redis Operations Rate
-```promql
-rate(redis_operations_total[5m])
+## Tips
+
+1. Filter by tenant with template variables when relevant.
+2. Set alerts on `redis_stream_group_pending > 1000` (worker stalled) and on
+   `rate(webhook_dlq_total[5m]) > 0.05` (sustained DLQ traffic).
+3. Use annotations for deployments and load tests — pairs nicely with the
+   `loadtest_requests_total` series.
+
+## Quick start
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
+# Grafana: http://localhost:3000 (default admin/${GRAFANA_ADMIN_PASSWORD})
+# Prometheus: http://localhost:9090
+# Jaeger: http://localhost:16686
 ```
-
-## Dashboard Tips
-
-1. **Use template variables** for tenant_id to filter metrics
-2. **Set appropriate time ranges** (last 1h for ops, last 24h for trends)
-3. **Configure alerts** for critical metrics (lag > 1000, error rate > 5%)
-4. **Add annotations** for deployments and incidents
-5. **Use color thresholds** (green/yellow/red) for quick status checks
-
-## Quick Start
-
-After starting the stack, dashboards are automatically available at:
-http://localhost:3000 (admin/admin)
-
-They will be in the "EasyHooks" folder in the left sidebar.

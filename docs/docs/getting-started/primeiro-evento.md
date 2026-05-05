@@ -12,15 +12,16 @@ Com o tenant criado em [Autenticação](./autenticacao.md), vamos enviar um webh
 ```mermaid
 sequenceDiagram
     participant C as Cliente (curl)
-    participant API as FastAPI Ingestor
-    participant K as Kafka (webhooks.inbound)
-    participant W as Worker
-    participant R as Redis Pub/Sub
+    participant API as Go API Ingestor
+    participant S as Redis Stream events:in
+    participant W as Worker (XREADGROUP)
+    participant T as stream:tenant:{id}
     C->>API: POST /v1/webhooks/{tenant_id} (HMAC + body)
+    API->>S: XADD tenant_id, event_id, payload
     API-->>C: 202 Accepted
-    API->>K: produce(tenant_id, event_id, payload)
-    K->>W: consume
-    W->>R: PUBLISH tenant_events:{tenant_id}
+    S->>W: XREADGROUP > webhook-workers
+    W->>T: XADD payload
+    W->>S: XACK
 ```
 
 ## 1. Garanta que o stack está no ar
@@ -78,8 +79,8 @@ docker compose logs -f worker
 Você deve ver entradas como:
 
 ```
-INFO  Acquired idempotency lock for event_id=evt-001 tenant=f1a2b3c4-...
-INFO  Published event to tenant channel tenant_events:f1a2b3c4-...
+INFO  Worker started stream=events:in dlq_stream=events:failed group=webhook-workers ...
+INFO  Published event to stream tenant_id=f1a2b3c4-... stream_id=1700000000000-0
 ```
 
 ## 6. Reenvie o mesmo evento (idempotência)
@@ -87,10 +88,12 @@ INFO  Published event to tenant channel tenant_events:f1a2b3c4-...
 Repita o `curl` exatamente igual. A API retorna `202` novamente, mas o worker registra:
 
 ```
-INFO  Skipping duplicated event_id=evt-001 (already processed)
+INFO  Ignored duplicated event event_id=evt-001 tenant_id=f1a2b3c4-...
 ```
 
-Isto demonstra a garantia de **exactly-once interno** via lock no Redis. Detalhes em [Erros e DLQ → Retentativas](../errors/retentativas-dlq.md).
+Isto demonstra a garantia de **exactly-once interno** via o lock
+`event_lock:evt-001` no Redis. Detalhes em
+[Erros e DLQ → Retentativas](../errors/retentativas-dlq.md).
 
 ## 7. Próximos passos
 

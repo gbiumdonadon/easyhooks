@@ -327,7 +327,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(webhook_dlq_total[5m]) / rate(kafka_consume_total[5m])",
+          "expr": "rate(webhook_dlq_total[5m]) / rate(stream_consume_total[5m])",
           "legendFormat": "Error Rate",
           "refId": "A"
         }
