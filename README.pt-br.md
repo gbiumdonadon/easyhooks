@@ -1,5 +1,9 @@
 # Easyhooks
 
+[![Licença: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Go](https://img.shields.io/badge/Go-1.26-00ADD8.svg?logo=go)](https://go.dev/)
+[![Redis](https://img.shields.io/badge/Redis-7-DC382D.svg?logo=redis)](https://redis.io/)
+
 [🇺🇸 English version](README.md)
 
 Plataforma multi-tenant de **ingestão, processamento idempotente e distribuição
@@ -28,6 +32,7 @@ PostgreSQL. Redis Streams compõem tanto a fila de trabalho (`events:in` /
 - [Troubleshooting](#troubleshooting)
 - [Contribuição](#contribuição)
 - [Licença](#licença)
+- [Disclaimer](#disclaimer)
 
 ---
 
