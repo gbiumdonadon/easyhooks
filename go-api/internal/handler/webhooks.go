@@ -3,20 +3,22 @@ package handler
 import (
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 
-	"github.com/twmb/franz-go/pkg/kgo"
+	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/easyhooks/easyhooks/internal/config"
-	"github.com/easyhooks/easyhooks/internal/kafka"
 	"github.com/easyhooks/easyhooks/internal/middleware"
 	"github.com/easyhooks/easyhooks/internal/observability"
+	"github.com/easyhooks/easyhooks/internal/streams"
 )
 
-// IngestWebhook handles POST /v1/webhooks/{tenant_id}.
-// Protected by TenantAuth middleware.
-func IngestWebhook(producer *kgo.Client, cfg *config.Config) http.HandlerFunc {
+// IngestWebhook handles POST /v1/webhooks/{tenant_id} by appending the event to
+// the Redis Stream cfg.EventStreamKey for the worker to pick up. Protected by
+// TenantAuth middleware.
+func IngestWebhook(rdb *goredis.Client, cfg *config.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		tenant, ok := middleware.TenantFromContext(r.Context())
 		if !ok {
@@ -37,17 +39,22 @@ func IngestWebhook(producer *kgo.Client, cfg *config.Config) http.HandlerFunc {
 			return
 		}
 
-		if err := kafka.ProduceWebhookMessage(r.Context(), producer, cfg.KafkaWebhookTopic, tenant.TenantID.String(), eventID, body); err != nil {
-			writeError(w, http.StatusInternalServerError, "Failed to queue webhook event")
+		if _, err := streams.Publish(r.Context(), rdb, cfg.EventStreamKey, tenant.TenantID.String(), eventID, body); err != nil {
+			slog.Error("Failed to publish webhook to stream",
+				"tenant_id", tenant.TenantID, "event_id", eventID, "error", err,
+			)
+			observability.StreamPublishTotal.WithLabelValues(cfg.EventStreamKey, "error").Inc()
 			observability.WebhookRequestsTotal.WithLabelValues(tenant.TenantID.String(), "error").Inc()
+			writeError(w, http.StatusInternalServerError, "Failed to queue webhook event")
 			return
 		}
 
+		observability.StreamPublishTotal.WithLabelValues(cfg.EventStreamKey, "success").Inc()
 		observability.WebhookRequestsTotal.WithLabelValues(tenant.TenantID.String(), "accepted").Inc()
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
-		json.NewEncoder(w).Encode(map[string]string{ //nolint:errcheck
+		_ = json.NewEncoder(w).Encode(map[string]string{
 			"status":    "accepted",
 			"tenant_id": tenant.TenantID.String(),
 		})

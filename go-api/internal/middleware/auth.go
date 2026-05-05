@@ -5,8 +5,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -16,7 +18,7 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/easyhooks/easyhooks/internal/config"
-	"github.com/easyhooks/easyhooks/internal/db/queries"
+	"github.com/easyhooks/easyhooks/internal/redisstore"
 	"github.com/easyhooks/easyhooks/internal/security"
 )
 
@@ -42,11 +44,12 @@ func TenantFromContext(ctx context.Context) (AuthenticatedTenant, bool) {
 func writeAuthError(w http.ResponseWriter, code int, detail string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(map[string]string{"detail": detail}) //nolint:errcheck
+	_ = json.NewEncoder(w).Encode(map[string]string{"detail": detail})
 }
 
-// AdminAuth verifies admin Bearer tokens against the DB (bcrypt).
-func AdminAuth(store *queries.Store) func(http.Handler) http.Handler {
+// AdminAuth verifies the admin Bearer token against the bcrypt hash seeded in
+// Redis under redisstore.AdminTokenHashKey. Only one admin is supported.
+func AdminAuth(rdb *goredis.Client) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			auth := r.Header.Get("Authorization")
@@ -56,24 +59,27 @@ func AdminAuth(store *queries.Store) func(http.Handler) http.Handler {
 			}
 			token := strings.TrimPrefix(auth, "Bearer ")
 
-			admins, err := store.GetAllAdminUsers(r.Context())
+			ok, err := redisstore.VerifyAdmin(r.Context(), rdb, token)
 			if err != nil {
+				if errors.Is(err, redisstore.ErrAdminNotSeeded) {
+					slog.Error("Admin verification attempted before seeding")
+					writeAuthError(w, http.StatusServiceUnavailable, "Admin not provisioned")
+					return
+				}
+				slog.Error("Admin verification failed", "error", err)
 				writeAuthError(w, http.StatusInternalServerError, "Internal error")
 				return
 			}
-			for _, admin := range admins {
-				if security.VerifySecret(token, admin.TokenHash) {
-					next.ServeHTTP(w, r)
-					return
-				}
+			if !ok {
+				writeAuthError(w, http.StatusForbidden, "Invalid admin credentials")
+				return
 			}
-			writeAuthError(w, http.StatusForbidden, "Invalid admin credentials")
+			next.ServeHTTP(w, r)
 		})
 	}
 }
 
 // TenantAuth validates tenant credentials (HMAC or Bearer) and injects AuthenticatedTenant.
-// Resolves the authenticated tenant from context (Bearer + tenant id).
 func TenantAuth(rdb *goredis.Client, cfg *config.Config) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -84,7 +90,6 @@ func TenantAuth(rdb *goredis.Client, cfg *config.Config) func(http.Handler) http
 				return
 			}
 
-			// Read body once and restore it so handlers can still read it.
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
 				writeAuthError(w, http.StatusBadRequest, "Cannot read request body")
@@ -143,16 +148,13 @@ func authenticateViaHMAC(ctx context.Context, tenantID uuid.UUID, signature stri
 }
 
 // authenticateViaBearer uses a two-level Redis cache to avoid repeated bcrypt calls.
-// Bearer session authentication via Redis cache and bcrypt fallback.
 func authenticateViaBearer(ctx context.Context, tenantID uuid.UUID, rawSecret string, rdb *goredis.Client, cfg *config.Config) (AuthenticatedTenant, error) {
-	// Level 1: fast session cache — avoids bcrypt on every request
 	shortHash := fmt.Sprintf("%x", sha256.Sum256([]byte(rawSecret)))[:16]
 	sessionKey := fmt.Sprintf("auth_session:%s:%s", tenantID, shortHash)
 	if exists, _ := rdb.Exists(ctx, sessionKey).Result(); exists > 0 {
 		return AuthenticatedTenant{TenantID: tenantID}, nil
 	}
 
-	// Level 2: bcrypt verify against cached hash
 	authKey := fmt.Sprintf("tenant_auth:%s", tenantID)
 	cachedHash, err := rdb.Get(ctx, authKey).Result()
 	if err == goredis.Nil {
@@ -165,7 +167,6 @@ func authenticateViaBearer(ctx context.Context, tenantID uuid.UUID, rawSecret st
 		return AuthenticatedTenant{}, &authErr{http.StatusForbidden, "Invalid credentials for this tenant"}
 	}
 
-	// Populate session cache
-	rdb.Set(ctx, sessionKey, "1", time.Duration(cfg.AuthSessionTTL)*time.Second) //nolint:errcheck
+	_ = rdb.Set(ctx, sessionKey, "1", time.Duration(cfg.AuthSessionTTL)*time.Second).Err()
 	return AuthenticatedTenant{TenantID: tenantID}, nil
 }

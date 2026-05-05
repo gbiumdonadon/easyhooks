@@ -1,7 +1,10 @@
 package middleware
 
 import (
+	"bufio"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"regexp"
 	"time"
@@ -9,7 +12,9 @@ import (
 	"github.com/easyhooks/easyhooks/internal/observability"
 )
 
-// responseWriter wraps http.ResponseWriter to capture the status code.
+// responseWriter wraps http.ResponseWriter to capture the status code while
+// preserving the optional interfaces the standard library and gorilla/websocket
+// rely on (Hijacker for WebSocket upgrades, Flusher for streaming responses).
 type responseWriter struct {
 	http.ResponseWriter
 	status int
@@ -18,6 +23,23 @@ type responseWriter struct {
 func (rw *responseWriter) WriteHeader(code int) {
 	rw.status = code
 	rw.ResponseWriter.WriteHeader(code)
+}
+
+// Hijack lets the underlying ResponseWriter take over the connection, which is
+// required for WebSocket upgrades. Without this, gorilla/websocket fails with
+// "response does not implement http.Hijacker" and the client sees code 1006.
+func (rw *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := rw.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("underlying ResponseWriter does not implement http.Hijacker")
+	}
+	return h.Hijack()
+}
+
+func (rw *responseWriter) Flush() {
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 // Normalization patterns for stable Prometheus label cardinalities.

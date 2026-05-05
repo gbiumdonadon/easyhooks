@@ -3,50 +3,52 @@ package service
 import (
 	"context"
 	"fmt"
-	"log/slog"
 
 	"github.com/google/uuid"
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/easyhooks/easyhooks/internal/config"
-	"github.com/easyhooks/easyhooks/internal/db/queries"
 	"github.com/easyhooks/easyhooks/internal/security"
 )
 
-// CreateTenantResult holds the newly created tenant and its plaintext secret key.
+// CreateTenantResult holds the newly provisioned tenant id and the plaintext
+// secret key that the caller must hand back to the client (it is never
+// retrievable again — only the bcrypt hash is stored).
 type CreateTenantResult struct {
-	Tenant    *queries.Tenant
+	TenantID  uuid.UUID
 	SecretKey string
 }
 
-// CreateTenant creates a new tenant, hashes its secret, persists to DB, and caches in Redis.
-// CreateTenant provisions tenant credentials and Redis-backed secrets.
-func CreateTenant(ctx context.Context, store *queries.Store, rdb *goredis.Client, cfg *config.Config, name string, adminID uuid.UUID) (CreateTenantResult, error) {
+// CreateTenant generates a tenant id and a fresh secret, then stores both
+// auth artifacts in Redis:
+//   - tenant_auth:{id}     bcrypt hash for Bearer auth
+//   - tenant_hmac_key:{id} raw secret for HMAC-SHA256 webhook signatures
+//
+// Both keys are persisted with no TTL so that they survive Redis restarts as
+// long as AOF/RDB persistence is enabled. They are the canonical source of
+// truth for tenant credentials.
+func CreateTenant(ctx context.Context, rdb *goredis.Client, cfg *config.Config) (CreateTenantResult, error) {
 	rawSecret, err := security.GenerateSecretKey(cfg.SecretKeyBytes)
 	if err != nil {
 		return CreateTenantResult{}, fmt.Errorf("generate secret key: %w", err)
 	}
-
 	secretHash, err := security.HashSecret(rawSecret)
 	if err != nil {
 		return CreateTenantResult{}, fmt.Errorf("hash secret: %w", err)
 	}
 
 	tenantID := uuid.New()
-	tenant, err := store.CreateTenant(ctx, tenantID, name, secretHash, adminID)
-	if err != nil {
-		return CreateTenantResult{}, fmt.Errorf("create tenant in DB: %w", err)
-	}
+	authKey := fmt.Sprintf("tenant_auth:%s", tenantID)
+	hmacKey := fmt.Sprintf("tenant_hmac_key:%s", tenantID)
 
-	// Cache credentials in Redis for fast auth lookups
-	authKey := fmt.Sprintf("tenant_auth:%s", tenant.ID)
-	hmacKey := fmt.Sprintf("tenant_hmac_key:%s", tenant.ID)
 	if err := rdb.Set(ctx, authKey, secretHash, 0).Err(); err != nil {
-		slog.Warn("Failed to sync tenant auth hash to Redis", "tenant_id", tenant.ID, "error", err)
+		return CreateTenantResult{}, fmt.Errorf("SET %s: %w", authKey, err)
 	}
 	if err := rdb.Set(ctx, hmacKey, rawSecret, 0).Err(); err != nil {
-		slog.Warn("Failed to sync tenant HMAC key to Redis", "tenant_id", tenant.ID, "error", err)
+		// Best-effort cleanup so we don't leave a half-provisioned tenant.
+		_ = rdb.Del(ctx, authKey).Err()
+		return CreateTenantResult{}, fmt.Errorf("SET %s: %w", hmacKey, err)
 	}
 
-	return CreateTenantResult{Tenant: tenant, SecretKey: rawSecret}, nil
+	return CreateTenantResult{TenantID: tenantID, SecretKey: rawSecret}, nil
 }

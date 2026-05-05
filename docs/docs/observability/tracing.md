@@ -4,7 +4,7 @@ sidebar_position: 2
 
 # Distributed Tracing
 
-EasyHooks uses **OpenTelemetry** and **Jaeger** to provide distributed tracing across the entire webhook lifecycle: from API ingestion to Kafka, through the worker, to Redis pub/sub and WebSocket delivery.
+EasyHooks uses **OpenTelemetry** and **Jaeger** to provide distributed tracing across the entire webhook lifecycle: from API ingestion to the `events:in` Redis Stream, through the worker, into the per-tenant fan-out streams and out to WebSocket clients.
 
 ## Quick Access
 
@@ -26,7 +26,7 @@ A typical webhook trace includes these spans:
 flowchart LR
     A[HTTP POST] --> B[webhook.ingest]
     B --> C[webhook.validate_hmac]
-    C --> D[webhook.produce_kafka]
+    C --> D[webhook.publish_stream]
     D --> E[webhook.process]
     E --> F[webhook.idempotency_check]
     F --> G[webhook.business_handler]
@@ -77,11 +77,11 @@ Min Duration: 1s
 ```
 ├─ webhook.ingest (200ms total)
    ├─ webhook.validate_hmac (5ms)
-   ├─ webhook.produce_kafka (180ms) ← BOTTLENECK!
-   └─ database.query (10ms)
+   └─ webhook.publish_stream (180ms) ← BOTTLENECK!
 ```
 
-This trace shows Kafka produce is the bottleneck (180ms of 200ms).
+This trace shows the `XADD events:in` is the bottleneck (180 ms of 200 ms) —
+investigate the Redis instance load or pool size.
 
 ## Key Spans
 
@@ -162,10 +162,10 @@ Event sent to DLQ after failures.
 3. Identify longest span(s)
 
 **Common causes:**
-- Kafka produce latency
-- Redis operation slow
-- Business logic timeout
-- Database query slow
+- Slow `XADD events:in` (Redis pool exhausted, network)
+- Slow per-tenant `XADD stream:tenant:{id}`
+- Business handler timeout
+- Slow downstream service called from the handler
 
 ### Scenario 2: High Error Rate
 
@@ -230,18 +230,18 @@ Use `attribute.*` from `go.opentelemetry.io/otel/attribute` and pass the derived
 
 ## Context Propagation
 
-Traces propagate automatically across:
-- **Go API** → Kafka (via message headers)
-- Kafka → **Go worker** (extracted from headers)
-- Worker → Redis (in-process)
-- Redis → WebSocket (in-process)
+The work queue runs entirely on Redis Streams, which do not carry OTel context
+out of the box. Spans are therefore scoped to each side of the queue:
 
-**How it works:**
+- **Go API** opens `webhook.ingest` → `webhook.publish_stream` and ends the
+  trace once the entry is appended to `events:in`.
+- **Go worker** starts a fresh trace `webhook.process` when it picks up the
+  entry via `XREADGROUP`. To correlate sides, look up by `event_id` (a span
+  attribute on both ends).
 
-1. API creates trace ID
-2. Injected into Kafka message headers
-3. Worker extracts trace context
-4. Continues same trace
+If you need a single end-to-end trace, propagate the OTel `traceparent` value
+in the stream entry payload (e.g. as a header field inside the JSON envelope)
+and re-inject it into the worker's context before starting the span.
 
 ## Performance Considerations
 

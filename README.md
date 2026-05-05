@@ -2,9 +2,13 @@
 
 [🇧🇷 Portuguese version](README.pt-br.md)
 
-Multi-tenant platform for **ingestion, idempotent processing, and real-time distribution** of webhooks. Built with Go (Chi) + Kafka + Redis + PostgreSQL, featuring WebSocket pub/sub for push delivery to end clients.
+Multi-tenant platform for **ingestion, idempotent processing, and real-time
+distribution** of webhooks. **Go (Chi) + Redis only** — no Kafka, no PostgreSQL.
+Redis Streams power both the work queue (`events:in` / `events:failed`) and the
+per-tenant fan-out streams consumed by the WebSocket layer.
 
-> **Full product documentation:** Check the Docusaurus site at `http://localhost:3001` (starts via `docker compose up -d`). Content organized in Quick Start, API Reference, WebSockets, and Error Handling sections.
+> **Full product documentation:** see the Docusaurus site at
+> <http://localhost:3001> (starts via `docker compose up -d`).
 
 ---
 
@@ -18,7 +22,9 @@ Multi-tenant platform for **ingestion, idempotent processing, and real-time dist
 - [Environment Variables](#environment-variables)
 - [Observability](#observability)
 - [Testing](#testing)
+- [Load Testing](#load-testing)
 - [Documentation](#documentation)
+- [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
 - [License](#license)
 - [Disclaimer](#disclaimer)
@@ -29,28 +35,33 @@ Multi-tenant platform for **ingestion, idempotent processing, and real-time dist
 
 ```mermaid
 flowchart LR
-    Admin[Admin] -->|"POST /admin/tenants"| API[Go API (Chi)]
+    Admin[Admin] -->|"POST /admin/tenants"| API[Go API ·Chi·]
     Client[Client] -->|"POST /v1/webhooks/:id<br/>+ HMAC"| API
-    API -->|"http_requests_total\nhttp_request_duration_seconds"| Prometheus[(Prometheus)]
-    API -->|"webhooks.inbound"| Kafka[(Kafka)]
-    Kafka --> Worker[Worker]
-    Worker -->|"PUBLISH<br/>tenant_events:id"| Redis[(Redis Pub/Sub)]
-    Worker -->|"failure 3x"| DLQ[(webhooks.dlq)]
+    API -->|XADD| EventsIn[("events:in (Redis Stream)")]
+    EventsIn -->|XREADGROUP| Worker[Go Worker]
+    Worker -->|"SET NX event_lock"| Redis[(Redis)]
+    Worker -->|"XADD per-tenant"| TenantStream[("stream:tenant:id")]
+    Worker -->|"XADD on permanent failure"| EventsFailed[("events:failed (DLQ)")]
+    Worker -->|XACK| EventsIn
     Client -->|"POST /v1/tokens/:id"| API
     Client -->|"WS /ws/events/:id"| API
-    Redis --> API
+    TenantStream -->|XREAD| API
     API -->|"send_text"| Client
-    Prometheus --> Grafana[Grafana]
-    K6[k6] -->|"load test"| API
+    API -->|"GET tenant_auth/hmac"| Redis
 ```
 
-- **`app`** — Go/Chi: Admin API, webhook ingestor, WS token issuer, WebSocket endpoint, HTTP metrics middleware.
-- **`worker`** — Dedicated Kafka consumer: idempotency (Redis), exponential retry, DLQ, and pub/sub.
-- **`docs`** — Docusaurus site (Nginx serving static files).
-- **`db`** — PostgreSQL 16 (tenants, admins).
-- **`redis`** — Redis 7 (credential cache, idempotency locks, pub/sub).
-- **`kafka`** — Kafka 3.7 (KRaft, single-broker for dev).
-- **`prometheus`** / **`grafana`** / **`jaeger`** — Full observability stack.
+- **`app`** — Go/Chi: admin API, webhook ingestor, WS token issuer, WebSocket
+  endpoint, HTTP metrics middleware. Publishes inbound events with `XADD events:in`.
+- **`worker`** — Redis Streams consumer (`XREADGROUP > webhook-workers`):
+  idempotency lock, exponential retry, fan-out to per-tenant streams, DLQ to
+  `events:failed`.
+- **`redis`** — Sole datastore. Holds the bootstrap admin token hash, all tenant
+  credentials, idempotency locks, the work queue and the per-tenant streams.
+  Persistence is on (AOF every second + RDB snapshots) so data survives restarts.
+- **`docs`** — Docusaurus site (Nginx serving the static build).
+
+The optional observability stack (Prometheus, Grafana, Jaeger, redis-exporter)
+lives in a separate compose file — opt in only when you need it.
 
 ---
 
@@ -58,13 +69,11 @@ flowchart LR
 
 | Layer | Technology |
 | --- | --- |
-| Language | Go 1.24 |
+| Language | Go 1.26 (toolchain auto) |
 | Web framework | Chi (`go-chi/chi`) + `net/http` stdlib |
-| Database driver / Migrations | `pgx/v5` + `golang-migrate` |
-| Messaging | Apache Kafka (`twmb/franz-go`) |
-| Cache / Streams | Redis 7 (`go-redis/v9`) |
-| Database | PostgreSQL 16 |
-| Observability | Prometheus + Grafana + Jaeger (OpenTelemetry) |
+| Datastore | Redis 7 (`go-redis/v9`) — credentials, work queue, per-tenant streams |
+| Work queue | Redis Streams (`events:in`, `events:failed`, consumer group `webhook-workers`) |
+| Observability | Prometheus + Grafana + Jaeger (OpenTelemetry) — optional, separate compose file |
 | Load Testing | Grafana k6 (HTTP + WebSocket scenarios under `load_tests/k6/`) |
 | Tests | `testing` stdlib + `testify` + `miniredis` |
 | Docs | Docusaurus 3 (Node 20 build → Nginx Alpine runtime) |
@@ -75,10 +84,10 @@ flowchart LR
 ## Prerequisites
 
 - **Docker** ≥ 24 + **Docker Compose** v2.
-- (Optional for running outside Docker) **Go 1.24+**, **Node 20+**.
+- (Optional, for running outside Docker) **Go 1.26+**, **Node 20+**.
 - (Optional, recommended) **`make`**, **`curl`**, **`jq`**, **`openssl`**.
 
-For Windows, use **WSL2** or **Docker Desktop**. Commands below are portable (PowerShell, bash, and zsh).
+For Windows, use **WSL2** or **Docker Desktop**.
 
 ---
 
@@ -90,43 +99,50 @@ For Windows, use **WSL2** or **Docker Desktop**. Commands below are portable (Po
 git clone https://github.com/gbiumdonadon/easyhooks.git
 cd easyhooks
 
-# Copy environment template and configure
 cp .env.example .env
 ```
 
 **Important:** Edit `.env` and set secure values for:
-- `POSTGRES_PASSWORD`
+
 - `ADMIN_SEED_TOKEN`
 - `APP_SECRET_KEY`
-- `GRAFANA_ADMIN_PASSWORD`
+- `GRAFANA_ADMIN_PASSWORD` *(only needed if you start the monitoring stack)*
 
 Generate secure random values:
 
 ```bash
-# On Linux/macOS/WSL
+# Linux/macOS/WSL
 openssl rand -hex 32
 
-# On Windows PowerShell
+# Windows PowerShell
 [Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Maximum 256 }))
 ```
 
-### 2. Start the stack
+### 2. Start the application stack
 
 ```bash
 docker compose up -d
-docker compose ps        # confirm all services are healthy
+docker compose ps
 ```
 
-First startup takes ~2-3 minutes (Go build + base images download). Subsequent starts are almost instant.
+### 3. (Optional) Start the observability stack
 
-### 3. Verify everything is running
+```bash
+docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
+```
 
-- API: <http://localhost:8000/health> (health check).
+This brings up Prometheus, Grafana, Jaeger and `redis-exporter` (with Redis
+Streams metrics enabled), all attached to the same network so they can scrape
+`app:8000` and `redis:6379`.
+
+### 4. Verify everything is running
+
+- API: <http://localhost:8000/health>.
 - Documentation: <http://localhost:3001>.
 - Redis: `docker compose exec redis redis-cli ping` → `PONG`.
-- Kafka: `docker compose exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list`.
+- Stream sanity: `docker compose exec redis redis-cli XINFO GROUPS events:in`.
 
-### 4. Create your first tenant
+### 5. Create your first tenant
 
 ```bash
 curl -X POST http://localhost:8000/admin/tenants \
@@ -146,7 +162,7 @@ Response:
 
 > The `secret_key` is shown **only once**. Save it securely.
 
-### 5. Send your first event
+### 6. Send your first event
 
 ```bash
 export TENANT_ID="<the tenant_id from response>"
@@ -164,7 +180,7 @@ curl -i -X POST "http://localhost:8000/v1/webhooks/$TENANT_ID" \
 
 Expected response: `HTTP/1.1 202 Accepted`.
 
-### 6. Watch the worker processing
+### 7. Watch the worker processing
 
 ```bash
 docker compose logs -f worker
@@ -173,11 +189,12 @@ docker compose logs -f worker
 You'll see something like:
 
 ```
-INFO  Acquired idempotency lock for event_id=evt-001 ...
-INFO  Published event to tenant channel tenant_events:f1a2b3c4-...
+INFO  Worker started stream=events:in dlq_stream=events:failed group=webhook-workers ...
+INFO  Published event to stream tenant_id=f1a2b3c4-... stream_id=1700000000000-0
 ```
 
-For details (HMAC, WebSocket, DLQ, examples in other languages), see the documentation at <http://localhost:3001>.
+For details (HMAC, WebSocket, DLQ, examples in other languages), see the
+documentation at <http://localhost:3001>.
 
 ---
 
@@ -185,308 +202,252 @@ For details (HMAC, WebSocket, DLQ, examples in other languages), see the documen
 
 | Service | Local URL | Internal Port | Description |
 | --- | --- | --- | --- |
-| API | <http://localhost:8000/health> | 8000 | Health check (no bundled Swagger in distroless image) |
+| API health | <http://localhost:8000/health> | 8000 | Health check |
 | API root | <http://localhost:8000/> | 8000 | Go API (Chi) |
 | Metrics | <http://localhost:8000/metrics> | 8000 | Prometheus metrics |
 | Documentation | <http://localhost:3001> | 80 | Docusaurus site (Nginx) |
-| **Grafana** | <http://localhost:3000> | 3000 | Dashboards (credentials from `.env`) |
-| **Prometheus** | <http://localhost:9090> | 9090 | Metrics & queries |
-| **Jaeger** | <http://localhost:16686> | 16686 | Distributed tracing |
-| PostgreSQL | localhost:5432 | 5432 | user from .env |
 | Redis | localhost:6379 | 6379 | no auth (dev) |
-| Kafka | localhost:9092 | 9092 | PLAINTEXT listener |
+| **Grafana** *(opt-in)* | <http://localhost:3000> | 3000 | Dashboards (creds from `.env`) |
+| **Prometheus** *(opt-in)* | <http://localhost:9090> | 9090 | Metrics & queries |
+| **Jaeger** *(opt-in)* | <http://localhost:16686> | 16686 | Distributed tracing |
 
 ---
 
 ## Environment Variables
 
-All variables can be configured via `.env` file in the project root. Copy `.env.example` to `.env` and customize.
+All variables are configured via `.env` in the project root. Copy `.env.example`
+to `.env` and customize.
 
-| Variable | Description | Example |
+| Variable | Description | Default |
 | --- | --- | --- |
-| `DATABASE_URL` | PostgreSQL connection string | `postgres://webhooks:password@db:5432/webhooks?sslmode=disable` |
-| `POSTGRES_USER` | PostgreSQL username | `webhooks` |
-| `POSTGRES_PASSWORD` | PostgreSQL password | `change-this-password` |
-| `POSTGRES_DB` | PostgreSQL database name | `webhooks` |
 | `REDIS_URL` | Redis connection string | `redis://redis:6379/0` |
-| `KAFKA_BOOTSTRAP_SERVERS` | Kafka broker addresses | `kafka:9092` |
-| `KAFKA_WEBHOOK_TOPIC` | Inbound webhook topic | `webhooks.inbound` |
-| `KAFKA_DLQ_TOPIC` | Dead letter queue topic | `webhooks.dlq` |
-| `KAFKA_CONSUMER_GROUP` | Consumer group ID | `webhook-workers` |
+| `REDIS_POOL_SIZE` | Redis client pool size | `100` |
+| `ADMIN_SEED_TOKEN` | Bootstrap admin Bearer token **(MUST CHANGE)** | *(generated)* |
+| `APP_SECRET_KEY` | WS token signing key **(MUST CHANGE)** | *(generated)* |
+| `EVENT_STREAM_KEY` | Inbound work-queue stream | `events:in` |
+| `DLQ_STREAM_KEY` | Dead Letter Queue stream | `events:failed` |
+| `CONSUMER_GROUP` | Consumer group used by the worker | `webhook-workers` |
+| `STREAM_BLOCK_MS` | XREADGROUP block timeout (ms) | `5000` |
+| `STREAM_COUNT` | Max batch size returned per Read | `32` |
 | `WORKER_MAX_RETRIES` | Max retries before DLQ | `3` |
 | `WORKER_BACKOFF_BASE_MS` | Exponential backoff base (ms) | `100` |
 | `IDEMPOTENCY_TTL_SECONDS` | Idempotency lock TTL | `86400` |
-| `ADMIN_SEED_TOKEN` | Bootstrap admin token **(MUST CHANGE)** | *(generated)* |
-| `APP_SECRET_KEY` | WS token signing key **(MUST CHANGE)** | *(generated)* |
 | `WS_TOKEN_TTL_SECONDS` | WebSocket token TTL | `300` |
-| `TENANT_EVENTS_CHANNEL_PREFIX` | Pub/Sub channel prefix | `tenant_events:` |
-| `TENANT_EVENTS_STREAM_PREFIX` | Redis stream prefix | `stream:tenant:` |
-| `STREAM_MAX_LEN` | Max stream length | `1000` |
-| `STREAM_HISTORY_COUNT` | History count on connect | `50` |
+| `AUTH_SESSION_TTL_SECONDS` | Cached bearer session TTL | `300` |
+| `TENANT_EVENTS_STREAM_PREFIX` | Per-tenant stream prefix | `stream:tenant:` |
+| `STREAM_MAX_LEN` | Max length per tenant stream (XADD MAXLEN ~) | `1000` |
+| `STREAM_HISTORY_COUNT` | History size on WS connect | `50` |
 | `CORS_ORIGINS` | Allowed CORS origins | `http://localhost:3001,http://localhost:3000` |
 | `SECRET_KEY_BYTES` | Tenant secret entropy | `32` |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | OpenTelemetry OTLP endpoint | `http://jaeger:4317` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP endpoint (Jaeger) | `http://jaeger:4317` |
 | `OTEL_SERVICE_NAME` | Service name for tracing | `easyhooks` |
 | `METRICS_ENABLED` | Enable Prometheus metrics | `true` |
 | `TRACING_ENABLED` | Enable distributed tracing | `true` |
 | `TRACING_SAMPLE_RATE` | Tracing sampling rate (0.0–1.0) | `1.0` |
-| `GRAFANA_ADMIN_USER` | Grafana admin username | `admin` |
+| `GRAFANA_ADMIN_USER` | Grafana admin user *(monitoring stack only)* | `admin` |
 | `GRAFANA_ADMIN_PASSWORD` | Grafana admin password **(MUST CHANGE)** | *(generated)* |
-| `GRAFANA_SERVER_ROOT_URL` | Grafana public root URL | `http://localhost:3000` |
-| `LOADTEST_ADMIN_TOKEN` | Admin token for load tests (mirrors `ADMIN_SEED_TOKEN`) | *(same as ADMIN_SEED_TOKEN)* |
+| `LOADTEST_ADMIN_TOKEN` | Admin token for load tests (mirror `ADMIN_SEED_TOKEN`) | *(same as ADMIN_SEED_TOKEN)* |
 | `LOADTEST_API_BASE_URL` | Target URL for load tests | `http://localhost:8000` |
 
-> **Production:** Always set `ADMIN_SEED_TOKEN`, `APP_SECRET_KEY`, and `GRAFANA_ADMIN_PASSWORD` via a secret manager. Rotate before promoting. Adjust `TRACING_SAMPLE_RATE` to 0.1–0.2 to reduce overhead.
+> **Production:** always set `ADMIN_SEED_TOKEN`, `APP_SECRET_KEY` (and
+> `GRAFANA_ADMIN_PASSWORD` when enabling monitoring) via a secret manager.
+> Rotate before promoting. Adjust `TRACING_SAMPLE_RATE` to 0.1–0.2.
 
 ---
 
 ## Observability
 
-EasyHooks includes comprehensive observability with **metrics**, **dashboards**, and **distributed tracing**.
+Bring up the optional stack with:
 
-### Quick Access
-
-- **Grafana**: <http://localhost:3000> (credentials: `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD` from `.env`) — Pre-configured dashboards
-- **Prometheus**: <http://localhost:9090> — Metrics and queries
-- **Jaeger**: <http://localhost:16686> — Distributed tracing UI
-
-### Key Metrics
-
-#### 1. Kafka Consumer Lag ⚠️ **MOST CRITICAL**
-
-Shows how many messages are waiting to be processed.
-
-```promql
-kafka_consumergroup_lag{consumergroup="webhook-workers"}
+```bash
+docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
 ```
 
-- **Healthy**: < 100 messages
-- **Warning**: 100-500 messages
-- **Critical**: > 1000 messages
+### Quick access
 
-**If lag is high:** Scale worker horizontally or investigate processing bottlenecks.
+- **Grafana** — <http://localhost:3000> (creds from `.env`).
+- **Prometheus** — <http://localhost:9090>.
+- **Jaeger** — <http://localhost:16686>.
 
-#### 2. Error Rate (DLQ)
+### Key metrics
 
-Percentage of webhooks that failed after all retries.
+#### 1. Worker backlog (XPENDING) ⚠️ **CRITICAL**
 
 ```promql
-rate(webhook_dlq_total[5m]) / rate(kafka_consume_total[5m])
+redis_stream_group_pending{stream="events:in",group="webhook-workers"}
 ```
 
-- **Healthy**: < 1%
-- **Warning**: 1-5%
-- **Critical**: > 5%
+- **Healthy**: < 100 pending entries.
+- **Warning**: 100–500.
+- **Critical**: > 1000 (worker is falling behind — scale horizontally).
 
-#### 3. Processing Duration
+#### 2. Stream length (queue depth)
 
-Time to process each webhook (p95).
+```promql
+redis_stream_length{stream="events:in"}
+redis_stream_length{stream="events:failed"}
+```
+
+#### 3. DLQ rate
+
+```promql
+rate(webhook_dlq_total[5m]) / rate(stream_consume_total[5m])
+```
+
+#### 4. Processing duration p95
 
 ```promql
 histogram_quantile(0.95, rate(webhook_processing_duration_seconds_bucket[5m]))
 ```
 
-- **Good**: < 200ms
-- **Acceptable**: 200-500ms
-- **Slow**: > 500ms
+### Dashboards
 
-#### 4. HTTP Request Rate
+Three dashboards are auto-provisioned:
 
-Total incoming requests processed by the API, tagged by endpoint and status code.
+1. **EasyHooks Overview** — RPS, p95 latency, WS connections, DLQ ratio.
+2. **EasyHooks Redis Streams Metrics** — XPENDING, throughput, XLEN.
+3. **EasyHooks Load Test** — request rate, latency percentiles, stream pending
+   backlog while a k6 run is in progress.
 
-```promql
-sum(rate(http_requests_total[1m])) by (endpoint, status_code)
-```
+### Distributed tracing
 
-#### 5. Active WebSocket Connections
-
-Real-time connections per tenant.
-
-```promql
-websocket_connections_active
-```
-
-### Grafana Dashboards
-
-Three pre-configured dashboards are automatically provisioned:
-
-1. **EasyHooks Overview** — System-wide health: webhook RPS, p95 latency, WebSocket connections, DLQ error rate
-2. **Kafka Metrics** — Consumer lag, offsets, throughput
-3. **EasyHooks Load Test** — HTTP request rate per endpoint, latency percentiles (p50/p95/p99), error rate by status code, total requests counter
-
-### Distributed Tracing
-
-View complete request flows from API → Kafka → Worker → Redis → WebSocket:
-
-1. Open Jaeger: <http://localhost:16686>
-2. Select service: `easyhooks` or `easyhooks-worker`
-3. Click "Find Traces"
-4. Explore waterfall view for latency breakdown
-
-**Example trace spans:**
-- `webhook.ingest` — API receives webhook
-- `webhook.validate_hmac` — HMAC signature validation
-- `webhook.produce_kafka` — Send to Kafka
-- `webhook.process` — Worker processing
-- `webhook.idempotency_check` — Duplicate detection
-- `webhook.publish_redis` — Pub/sub distribution
-- `websocket.send` — Client delivery
-
-### Troubleshooting with Observability
-
-| Problem | Check |
-| --- | --- |
-| Slow webhooks | Jaeger traces → Find longest span |
-| High error rate | Grafana DLQ dashboard → Error types |
-| Worker falling behind | Grafana Kafka dashboard → Consumer lag |
-| Client not receiving | Jaeger → Look for missing `websocket.send` span |
-
-### Production Recommendations
-
-1. **Set up alerts** for critical metrics (lag, error rate)
-2. **Lower sampling rate**: `TRACING_SAMPLE_RATE=0.1` (10%)
-3. **Use persistent storage** for Prometheus/Jaeger
-4. **Monitor trends** daily, not just current values
-5. **Correlate** metrics with deployments and incidents
-
-For detailed documentation, see <http://localhost:3001/observability/monitoring>
+A complete trace covers `webhook.ingest` → `webhook.publish_stream` →
+`webhook.process` (worker) → `webhook.business_handler` → `webhook.dispatch_to_dlq`
+(when applicable) → `websocket.send`.
 
 ---
 
 ## Testing
 
-Automated tests live under **`go-api/`** and use the Go `testing` package plus `testify` and `miniredis` where Redis behaviour is needed.
-
 ```bash
 cd go-api
 go test ./...
-
-# Optional: race detector and coverage
 go test -race ./...
 go test -cover ./...
 ```
 
-> Integration-style tests that spin up Kafka/Postgres in Docker are not wired in CI yet; use the Docker Compose stack and manual checks, or extend `go test` with something like Testcontainers when you need full-stack parity.
-
----
-
-## Documentation
-
-The project includes comprehensive documentation via Docusaurus.
-
-### Viewing Documentation
-
-```bash
-docker compose up -d docs
-# Open http://localhost:3001
-```
-
-### Editing Documentation
-
-Documentation files are in `docs/docs/` (pure markdown with Docusaurus frontmatter).
-
-#### Hot reload in dev mode
-
-```bash
-cd docs
-npm install        # first time only
-npm start          # http://localhost:3000 with hot reload
-```
-
-#### Validate production build
-
-```bash
-cd docs
-npm run build      # generates docs/build/
-npm run serve      # serves docs/build/ at http://localhost:3000
-```
+The unit suite uses `miniredis`, so it does not require a live Redis instance.
 
 ---
 
 ## Load Testing
 
-EasyHooks ships with a **Grafana k6** suite under `load_tests/k6/`. Tenant pools are created with shell + `curl`/`jq` (see `load_tests/scripts/create_tenant_pool.sh`).
+EasyHooks ships with a Grafana k6 suite under `load_tests/k6/`.
 
-### Quick run
-
-```bash
-# From repo root — stack must be up; set tokens in .env or export
-export LOADTEST_ADMIN_TOKEN="$ADMIN_SEED_TOKEN"
-export LOADTEST_API_BASE_URL=http://localhost:8000
-
-cd load_tests
-./scripts/create_tenant_pool.sh
-k6 run k6/scenarios/baseline.js
-```
-
-With Docker (no local k6 install):
+### From inside Docker (recommended)
 
 ```bash
-docker compose -f load_tests/docker-compose.loadtest.yml run --rm loadtest-init
-docker compose -f load_tests/docker-compose.loadtest.yml run --rm k6 run k6/scenarios/baseline.js
+docker compose up -d
+docker compose -f load_tests/docker-compose.loadtest.yml run --rm k6 \
+  run k6/scenarios/baseline.js
 ```
 
-### Available scenarios
+### Scenarios
 
 | Scenario | Script | Purpose |
 | --- | --- | --- |
 | Baseline | `k6/scenarios/baseline.js` | Normal-load ramp |
 | Throughput | `k6/scenarios/throughput.js` | Higher sustained RPS |
 | WebSocket scale | `k6/scenarios/websocket_scale.js` | Many concurrent WS clients |
-| Multi-tenant | `k6/scenarios/multi_tenant.js` | Spread load across tenant pool |
+| Multi-tenant | `k6/scenarios/multi_tenant.js` | Spread load across the tenant pool |
 | Stress | `k6/scenarios/stress.js` | Aggressive ramp toward saturation |
-| Custom | `k6/scenarios/custom_scenario.js` | Env-tunable smoke / custom mix |
 
-### Metrics in Grafana
+While a test runs, watch the **EasyHooks Load Test** Grafana dashboard
+(`Stream Pending Backlog` panel) — if it grows unbounded, the worker is
+saturating.
 
-While a test is running, open the **EasyHooks Load Test** dashboard at <http://localhost:3000/d/loadtest-overview> to see **application** Prometheus metrics (the dashboard does not ingest k6’s own metrics):
+See `load_tests/README.md` for the full guide.
 
-- Request rate per endpoint (RPS)
-- Latency percentiles (p50 / p95 / p99)
-- HTTP error rate by status code
-- Kafka consumer lag (leading indicator of saturation)
+---
 
-### Load Ramp-Up Guide
+## Documentation
 
-| Goal | Users | Ramp Up | Expected RPS |
-| --- | --- | --- | --- |
-| Baseline check | 20 | 5/s | ~40 RPS |
-| Moderate stress | 100 | 10/s | ~200 RPS |
-| High stress | 500 | 20/s | ~1 000 RPS |
-| Saturation search | 2 000 | 20/s | ~3 000+ RPS |
+```bash
+docker compose up -d docs
+# Open http://localhost:3001
+```
 
-> **Rule of thumb:** Keep ramp-up rate ≤ 20 users/second to avoid connection-reset storms. Watch Kafka consumer lag — if it grows unboundedly, the pipeline is saturating.
+Documentation files live in `docs/docs/` (Markdown with Docusaurus frontmatter).
+For hot reload during edits:
 
-See `load_tests/README.md` for the full guide (Docker Compose, `make loadtest-*`, and environment variables).
+```bash
+cd docs
+npm install        # first time only
+npm start          # http://localhost:3000
+```
+
+---
+
+## Troubleshooting
+
+### App fails to start — `connection refused` to Redis
+
+```bash
+docker compose ps
+docker compose logs redis
+```
+
+Redis takes a couple of seconds to become healthy on first boot.
+
+### `403 Forbidden` posting a webhook
+
+1. HMAC computed over a different body than what was sent (e.g. `echo` added
+   `\n`). Use `printf '%s'` instead.
+2. Bearer token does not match the `tenant_id` in the URL (cross-tenant).
+
+### `400 Bad Request — Missing required header X-Event-Id`
+
+`X-Event-Id` is mandatory for idempotency. Always send a unique UUID/ULID.
+
+### Inspect the work queue
+
+```bash
+docker compose exec redis redis-cli XLEN events:in
+docker compose exec redis redis-cli XINFO GROUPS events:in
+docker compose exec redis redis-cli XPENDING events:in webhook-workers
+```
+
+### Inspect the DLQ
+
+```bash
+docker compose exec redis redis-cli XLEN events:failed
+docker compose exec redis redis-cli XRANGE events:failed - + COUNT 10
+```
+
+The `x_original_error` field on each entry holds the last failure reason.
+
+### Inspect tenant credentials
+
+```bash
+docker compose exec redis redis-cli
+> KEYS tenant_auth:*
+> GET tenant_hmac_key:<tenant_id>
+> EXISTS admin:token_hash
+```
+
+### Reset the entire state
+
+```bash
+docker compose down -v   # drops the redis-data volume
+docker compose up -d
+```
 
 ---
 
 ## Contributing
 
-### Tests
+1. Add or extend `_test.go` files under `go-api/`.
+2. Run `cd go-api && go test ./...` until green.
+3. `cd docs && npm run build` if you touched the Docusaurus content.
 
-1. Add or extend `_test.go` files next to the code under `go-api/`.
-2. Run `go test ./...` from `go-api/` until green.
-3. Refactor while keeping tests passing.
-
-### Code standards (Go)
-
-- Prefer small, focused packages under `go-api/internal/`.
-- Use `context.Context` for cancellation on I/O paths.
-- Run `go fmt` / `golangci-lint` if configured in your environment.
-
-### Before opening a PR
-
-```bash
-cd go-api && go test ./...
-cd docs && npm run build
-```
+Commit format: `<type>: <short summary>` — `feat`, `fix`, `refactor`, `test`,
+`docs`, `chore`.
 
 ---
 
 ## License
 
-This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
+Apache License 2.0 — see [LICENSE](LICENSE).
 
 ```
 Copyright © 2026 Gustavo Bium Donadon
@@ -496,17 +457,13 @@ Copyright © 2026 Gustavo Bium Donadon
 
 ## Disclaimer
 
-This project is provided "as is" for study and free use purposes. While it implements production-ready patterns (idempotency, retry logic, DLQ, multi-tenancy), it is primarily intended for educational purposes and as a starting point for webhook infrastructure implementations.
+This project is provided "as is" for study and free use. While it implements
+production-ready patterns (idempotency, retry logic, DLQ, multi-tenancy), it is
+primarily intended as an educational starting point for webhook infrastructure.
 
-**Use in production at your own risk.** Always conduct thorough security audits, load testing, and customize the system to your specific requirements before deploying to production environments.
-
----
-
-## Resources
-
-- **Product Documentation:** <http://localhost:3001> (after `docker compose up -d docs`)
-- **API health:** <http://localhost:8000/health>
+**Use in production at your own risk.** Always conduct security audits, load
+testing and customisation before deploying to production environments.
 
 ---
 
-**Built with Go, Kafka, Redis, and PostgreSQL**
+**Built with Go and Redis.**

@@ -3,6 +3,7 @@ package observability
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
@@ -22,7 +23,15 @@ func InitTracing(ctx context.Context, cfg *config.Config) (func(context.Context)
 		return func(context.Context) error { return nil }, nil
 	}
 
-	conn, err := grpc.NewClient(cfg.OTELEndpoint,
+	// grpc.NewClient expects a host:port target. The OTEL_EXPORTER_OTLP_ENDPOINT
+	// env var is conventionally a URL (http://jaeger:4317) — strip the scheme
+	// and any trailing slash so we don't end up dialing host:port:443.
+	target := cfg.OTELEndpoint
+	target = strings.TrimPrefix(target, "http://")
+	target = strings.TrimPrefix(target, "https://")
+	target = strings.TrimSuffix(target, "/")
+
+	conn, err := grpc.NewClient(target,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
 	if err != nil {

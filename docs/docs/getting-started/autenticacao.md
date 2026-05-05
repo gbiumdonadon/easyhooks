@@ -12,11 +12,16 @@ A Easyhooks usa um modelo de **dois níveis de credenciais**:
 1. **Admin** — administradores criam e gerenciam tenants. A autenticação é feita via **Bearer token** definido pela variável `ADMIN_SEED_TOKEN`.
 2. **Tenant** — cada tenant recebe um `tenant_id` (UUID) e um `secret_key` (string opaca de alta entropia) que é usado para autenticar requisições no ingestor (HMAC ou Bearer) e para emitir tokens de WebSocket.
 
-> O `secret_key` é mostrado **apenas uma vez** no momento da criação. Guarde-o em um cofre (ex.: HashiCorp Vault, AWS Secrets Manager). A plataforma armazena apenas o hash `bcrypt` para verificação Bearer e o secret bruto criptografado em Redis para verificação HMAC.
+> O `secret_key` é mostrado **apenas uma vez** no momento da criação. Guarde-o em um cofre (ex.: HashiCorp Vault, AWS Secrets Manager). A plataforma armazena apenas o hash `bcrypt` em `tenant_auth:{id}` (verificação Bearer) e o secret bruto em `tenant_hmac_key:{id}` (verificação HMAC). Ambas as chaves vivem em Redis sem TTL — a persistência AOF + RDB garante que sobrevivam a reinícios.
 
 ## 1. Obtendo o `ADMIN_SEED_TOKEN`
 
-Na primeira subida do container `app`, se `ADMIN_SEED_TOKEN` estiver definido e ainda não existir utilizador admin, a API Go cria o **superadmin** cujo Bearer token é esse mesmo valor (ver `seedAdmin` em `go-api/cmd/api/main.go`).
+Na primeira subida do container `app`, a API Go executa
+`redisstore.SeedSuperAdmin` (veja `go-api/cmd/api/main.go`). Ela escreve o
+hash bcrypt de `ADMIN_SEED_TOKEN` na chave única `admin:token_hash` se ela
+ainda não existir. Boots seguintes são no-op, ou seja, alterar a env var em
+runtime não rotaciona silenciosamente a senha — apague a chave e reinicie a
+API para forçar um novo seed.
 
 Configure no arquivo `.env`:
 
@@ -40,9 +45,12 @@ openssl rand -hex 32
 docker compose up -d
 ```
 
-Isso inicializa Postgres, Redis, Kafka, a API (`app`) e o `worker` consumidor.
+Isso sobe o Redis (com persistência AOF + RDB), a API (`app`) e o `worker`
+consumidor. A stack opcional de observabilidade (Prometheus/Grafana/Jaeger)
+fica em `docker-compose.monitoring.yml` e não é necessária para
+desenvolvimento.
 
-Aguarde 5-10 segundos para os healthchecks ficarem verdes:
+Aguarde alguns segundos para os healthchecks ficarem verdes:
 
 ```bash
 docker compose ps

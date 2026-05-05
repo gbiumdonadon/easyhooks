@@ -317,12 +317,12 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "kafka_consumergroup_lag{consumergroup=\"webhook-workers\"}",
-          "legendFormat": "{{topic}}-{{partition}}",
+          "expr": "redis_stream_group_pending{stream=\"events:in\",group=\"webhook-workers\"}",
+          "legendFormat": "{{stream}} / {{group}}",
           "refId": "A"
         }
       ],
-      "title": "Kafka Consumer Lag",
+      "title": "Stream Pending Backlog (XPENDING)",
       "type": "timeseries"
     },
     {

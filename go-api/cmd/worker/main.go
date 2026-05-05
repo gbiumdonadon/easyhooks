@@ -2,18 +2,17 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 
-	"github.com/twmb/franz-go/pkg/kgo"
-
 	"github.com/easyhooks/easyhooks/internal/config"
-	internalkafka "github.com/easyhooks/easyhooks/internal/kafka"
 	"github.com/easyhooks/easyhooks/internal/observability"
 	appredis "github.com/easyhooks/easyhooks/internal/redis"
 	"github.com/easyhooks/easyhooks/internal/service"
+	"github.com/easyhooks/easyhooks/internal/streams"
 )
 
 func main() {
@@ -37,7 +36,6 @@ func main() {
 	}
 	defer shutdownTracing(context.Background()) //nolint:errcheck
 
-	// Redis
 	rdb, err := appredis.NewClient(cfg)
 	if err != nil {
 		slog.Error("Failed to connect to Redis", "error", err)
@@ -45,55 +43,58 @@ func main() {
 	}
 	defer rdb.Close()
 
-	// Kafka consumer
-	consumer, err := internalkafka.NewConsumer(cfg)
-	if err != nil {
-		slog.Error("Failed to create Kafka consumer", "error", err)
+	// The API also calls EnsureGroup on startup; doing it here too lets the
+	// worker run standalone (e.g. tests, isolated deployments).
+	if err := streams.EnsureGroup(ctx, rdb, cfg.EventStreamKey, cfg.ConsumerGroup); err != nil {
+		slog.Error("Failed to ensure consumer group", "error", err)
 		os.Exit(1)
 	}
-	defer consumer.Close()
 
-	// Kafka DLQ producer
-	dlqClient, err := internalkafka.NewDLQProducer(cfg)
-	if err != nil {
-		slog.Error("Failed to create DLQ producer", "error", err)
-		os.Exit(1)
+	consumer, err := os.Hostname()
+	if err != nil || consumer == "" {
+		consumer = "worker"
 	}
-	defer dlqClient.Close()
+	reader := streams.NewReader(rdb, cfg.EventStreamKey, cfg.ConsumerGroup, consumer, cfg.StreamBlockMs, cfg.StreamCount)
 
-	// Business handler: publish events to Redis Streams
 	handler := service.MakeRedisStreamsHandler(rdb, cfg)
 
 	slog.Info("Worker started",
-		"topic", cfg.KafkaWebhookTopic,
-		"dlq_topic", cfg.KafkaDLQTopic,
-		"group_id", cfg.KafkaConsumerGroup,
+		"stream", cfg.EventStreamKey,
+		"dlq_stream", cfg.DLQStreamKey,
+		"group", cfg.ConsumerGroup,
+		"consumer", consumer,
 	)
 
-	// Poll loop — fetch and process records until shutdown
 	for {
-		fetches := consumer.PollFetches(ctx)
 		if ctx.Err() != nil {
 			break
 		}
-		if errs := fetches.Errors(); len(errs) > 0 {
-			for _, e := range errs {
-				slog.Error("Fetch error", "error", e.Err, "topic", e.Topic, "partition", e.Partition)
+		msgs, err := reader.Read(ctx)
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				break
 			}
+			slog.Error("Stream read failed", "error", err)
+			continue
 		}
 
-		fetches.EachRecord(func(record *kgo.Record) {
-			observability.KafkaConsumeTotal.WithLabelValues(cfg.KafkaWebhookTopic, cfg.KafkaConsumerGroup).Inc()
+		for _, m := range msgs {
+			observability.StreamConsumeTotal.WithLabelValues(cfg.EventStreamKey, cfg.ConsumerGroup).Inc()
 
-			if err := service.ProcessRecord(ctx, record, rdb, dlqClient, cfg, handler); err != nil {
-				slog.Error("Unrecoverable error processing record", "error", err)
+			if procErr := service.ProcessMessage(ctx, m, rdb, cfg, handler); procErr != nil {
+				// ProcessMessage already routes terminal failures to the DLQ
+				// stream; an error here means we could not even reach Redis,
+				// so the message will stay pending and be reclaimed manually
+				// (XAUTOCLAIM is currently a TODO).
+				slog.Error("Unrecoverable error processing message",
+					"stream_id", m.ID, "error", procErr,
+				)
 			}
 
-			// Manual commit after each record
-			if err := consumer.CommitRecords(ctx, record); err != nil {
-				slog.Warn("Failed to commit offset", "error", err)
+			if ackErr := reader.Ack(ctx, m.ID); ackErr != nil {
+				slog.Warn("Failed to ack stream message", "stream_id", m.ID, "error", ackErr)
 			}
-		})
+		}
 	}
 
 	slog.Info("Worker stopped")

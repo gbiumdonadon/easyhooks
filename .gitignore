@@ -1,26 +1,17 @@
-__pycache__/
-*.py[cod]
-*$py.class
-*.egg-info/
+# Go
+bin/
 dist/
-build/
-.eggs/
-*.egg
+*.exe
+*.test
+*.out
+coverage.out
+vendor/
+
 .env
 .env.local
 .env.*.local
-.venv/
-venv/
-env/
 *.db
 *.sqlite3
-.pytest_cache/
-.coverage
-htmlcov/
-
-# Docker volumes
-pgdata/
-kafka-logs/
 
 # Docusaurus
 docs/build/

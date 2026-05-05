@@ -9,14 +9,15 @@ import (
 
 	"github.com/google/uuid"
 	goredis "github.com/redis/go-redis/v9"
-	"github.com/twmb/franz-go/pkg/kgo"
 	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/easyhooks/easyhooks/internal/config"
 	"github.com/easyhooks/easyhooks/internal/observability"
+	"github.com/easyhooks/easyhooks/internal/streams"
 )
 
-// WebhookEnvelope holds the parsed content of a Kafka webhook record.
+// WebhookEnvelope holds the parsed content of a Redis Stream entry that
+// represents a single inbound webhook event.
 type WebhookEnvelope struct {
 	EventID  string
 	TenantID string
@@ -26,25 +27,54 @@ type WebhookEnvelope struct {
 // BusinessHandler is a function that processes a webhook envelope.
 type BusinessHandler func(ctx context.Context, envelope WebhookEnvelope) error
 
-// ExtractEnvelope parses tenant_id and event_id from Kafka record headers.
-func ExtractEnvelope(record *kgo.Record) (WebhookEnvelope, error) {
-	headers := make(map[string][]byte, len(record.Headers))
-	for _, h := range record.Headers {
-		headers[h.Key] = h.Value
+// ExtractEnvelope parses tenant_id, event_id and payload from a Redis Stream
+// XREADGROUP entry. The payload field may come back as either string or []byte
+// depending on the redis client's serialization choice.
+func ExtractEnvelope(msg goredis.XMessage) (WebhookEnvelope, error) {
+	tenantID, err := stringField(msg.Values, streams.FieldTenantID)
+	if err != nil {
+		return WebhookEnvelope{}, err
 	}
-	eventID, ok := headers["event_id"]
-	if !ok {
-		return WebhookEnvelope{}, fmt.Errorf("missing event_id header")
+	eventID, err := stringField(msg.Values, streams.FieldEventID)
+	if err != nil {
+		return WebhookEnvelope{}, err
 	}
-	tenantID, ok := headers["tenant_id"]
-	if !ok {
-		return WebhookEnvelope{}, fmt.Errorf("missing tenant_id header")
+	payload, err := payloadBytes(msg.Values, streams.FieldPayload)
+	if err != nil {
+		return WebhookEnvelope{}, err
 	}
 	return WebhookEnvelope{
-		EventID:  string(eventID),
-		TenantID: string(tenantID),
-		Payload:  record.Value,
+		EventID:  eventID,
+		TenantID: tenantID,
+		Payload:  payload,
 	}, nil
+}
+
+func stringField(values map[string]interface{}, key string) (string, error) {
+	v, ok := values[key]
+	if !ok {
+		return "", fmt.Errorf("missing %s field", key)
+	}
+	s, ok := v.(string)
+	if !ok {
+		return "", fmt.Errorf("%s field has unexpected type %T", key, v)
+	}
+	return s, nil
+}
+
+func payloadBytes(values map[string]interface{}, key string) ([]byte, error) {
+	v, ok := values[key]
+	if !ok {
+		return nil, fmt.Errorf("missing %s field", key)
+	}
+	switch t := v.(type) {
+	case string:
+		return []byte(t), nil
+	case []byte:
+		return t, nil
+	default:
+		return nil, fmt.Errorf("%s field has unexpected type %T", key, v)
+	}
 }
 
 // acquireIdempotencyLock attempts to set the idempotency key (SET NX EX).
@@ -66,12 +96,13 @@ func backoffDuration(cfg *config.Config, attempt int) time.Duration {
 	return time.Duration(ms) * time.Millisecond
 }
 
-// ProcessRecord applies idempotency check, business handler with retry/backoff, and DLQ routing.
-// Kafka consumer record processing pipeline.
-func ProcessRecord(ctx context.Context, record *kgo.Record, rdb *goredis.Client, dlqClient *kgo.Client, cfg *config.Config, handler BusinessHandler) error {
+// ProcessMessage applies idempotency check, business handler with retry/backoff,
+// and DLQ routing to a single Redis Stream entry. The caller is responsible
+// for XACK after this function returns.
+func ProcessMessage(ctx context.Context, msg goredis.XMessage, rdb *goredis.Client, cfg *config.Config, handler BusinessHandler) error {
 	tracer := observability.Tracer("easyhooks.worker")
 
-	envelope, err := ExtractEnvelope(record)
+	envelope, err := ExtractEnvelope(msg)
 	if err != nil {
 		return fmt.Errorf("extract envelope: %w", err)
 	}
@@ -80,10 +111,10 @@ func ProcessRecord(ctx context.Context, record *kgo.Record, rdb *goredis.Client,
 	span.SetAttributes(
 		attribute.String("tenant_id", envelope.TenantID),
 		attribute.String("event_id", envelope.EventID),
+		attribute.String("stream_id", msg.ID),
 	)
 	defer span.End()
 
-	// Idempotency check
 	acquired, err := acquireIdempotencyLock(ctx, rdb, cfg, envelope.EventID)
 	if err != nil {
 		return err
@@ -131,31 +162,18 @@ func ProcessRecord(ctx context.Context, record *kgo.Record, rdb *goredis.Client,
 		}
 	}
 
-	// All retries exhausted — send to DLQ
-	return dispatchToDLQ(ctx, dlqClient, cfg, envelope, lastErr)
+	return dispatchToDLQ(ctx, rdb, cfg, envelope, lastErr)
 }
 
-// dispatchToDLQ sends the event to the DLQ topic with diagnostic headers.
-func dispatchToDLQ(ctx context.Context, dlqClient *kgo.Client, cfg *config.Config, envelope WebhookEnvelope, origErr error) error {
-	if dlqClient == nil {
-		return fmt.Errorf("DLQ client is nil, cannot dispatch event %s", envelope.EventID)
-	}
-
+// dispatchToDLQ appends the failed event to the DLQ stream with the original
+// error message attached as a diagnostic field.
+func dispatchToDLQ(ctx context.Context, rdb *goredis.Client, cfg *config.Config, envelope WebhookEnvelope, origErr error) error {
 	tracer := observability.Tracer("easyhooks.worker")
 	_, span := tracer.Start(ctx, "webhook.dispatch_to_dlq")
 	defer span.End()
 
-	record := &kgo.Record{
-		Topic: cfg.KafkaDLQTopic,
-		Value: envelope.Payload,
-		Headers: []kgo.RecordHeader{
-			{Key: "tenant_id", Value: []byte(envelope.TenantID)},
-			{Key: "event_id", Value: []byte(envelope.EventID)},
-			{Key: "x-original-error", Value: []byte(origErr.Error())},
-		},
-	}
-	if err := dlqClient.ProduceSync(ctx, record).FirstErr(); err != nil {
-		return fmt.Errorf("produce to DLQ: %w", err)
+	if _, err := streams.PublishDLQ(ctx, rdb, cfg.DLQStreamKey, envelope.TenantID, envelope.EventID, envelope.Payload, origErr); err != nil {
+		return fmt.Errorf("publish to DLQ stream: %w", err)
 	}
 
 	observability.WebhookDLQTotal.WithLabelValues(envelope.TenantID, fmt.Sprintf("%T", origErr)).Inc()
@@ -168,7 +186,8 @@ func dispatchToDLQ(ctx context.Context, dlqClient *kgo.Client, cfg *config.Confi
 	return nil
 }
 
-// MakeRedisStreamsHandler returns a BusinessHandler that publishes events to Redis Streams.
+// MakeRedisStreamsHandler returns a BusinessHandler that fans the event out to
+// the per-tenant Redis Stream consumed by the WebSocket layer.
 func MakeRedisStreamsHandler(rdb *goredis.Client, cfg *config.Config) BusinessHandler {
 	return func(ctx context.Context, envelope WebhookEnvelope) error {
 		tenantID, err := uuid.Parse(envelope.TenantID)

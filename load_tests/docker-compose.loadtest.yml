@@ -1,10 +1,14 @@
 # Load tests: create tenant pool then run Grafana k6 against the API.
 #
+# Start the main stack first (`docker compose up -d` from repo root). This file attaches
+# to the stack network as `easyhooks_default` (default project name = directory name).
+# k6 and init use the API at http://app:8000 on that network (no host.docker.internal).
+#
 # Usage (from repo root):
-#   export LOADTEST_API_BASE_URL=http://host.docker.internal:8000
-#   export LOADTEST_ADMIN_TOKEN=<same as ADMIN_SEED_TOKEN>
-#   docker compose -f load_tests/docker-compose.loadtest.yml run --rm loadtest-init
 #   docker compose -f load_tests/docker-compose.loadtest.yml run --rm k6 run k6/scenarios/baseline.js
+#
+# Remote API / custom project name: set LOADTEST_API_BASE_URL, e.g.:
+#   LOADTEST_API_BASE_URL=http://host.docker.internal:8000 docker compose -f load_tests/...
 #
 # Override scenario:
 #   docker compose -f load_tests/docker-compose.loadtest.yml run --rm k6 run k6/scenarios/throughput.js
@@ -19,7 +23,7 @@ services:
       - path: ../.env
         required: false
     environment:
-      LOADTEST_API_BASE_URL: ${LOADTEST_API_BASE_URL:-http://host.docker.internal:8000}
+      LOADTEST_API_BASE_URL: ${LOADTEST_API_BASE_URL:-http://app:8000}
       LOADTEST_TENANT_COUNT: ${LOADTEST_TENANT_COUNT:-50}
       LOADTEST_TENANT_PREFIX: ${LOADTEST_TENANT_PREFIX:-loadtest}
       TENANT_POOL_FILE: /load_tests/.tenant_pool.json
@@ -40,7 +44,7 @@ services:
         /load_tests/wait-for-api.sh
         /load_tests/scripts/create_tenant_pool.sh
     networks:
-      - loadtest-network
+      - easyhooks_default
 
   k6:
     build:
@@ -53,15 +57,15 @@ services:
       - path: ../.env
         required: false
     environment:
-      LOADTEST_API_BASE_URL: ${LOADTEST_API_BASE_URL:-http://host.docker.internal:8000}
+      LOADTEST_API_BASE_URL: ${LOADTEST_API_BASE_URL:-http://app:8000}
       TENANT_POOL_FILE: /load_tests/.tenant_pool.json
     depends_on:
       loadtest-init:
         condition: service_completed_successfully
     networks:
-      - loadtest-network
+      - easyhooks_default
     command: ['run', 'k6/scenarios/baseline.js']
 
 networks:
-  loadtest-network:
-    driver: bridge
+  easyhooks_default:
+    external: true

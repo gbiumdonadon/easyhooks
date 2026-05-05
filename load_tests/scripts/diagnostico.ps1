@@ -77,7 +77,7 @@ Write-Host ""
 Write-Host "SERVICOS" -ForegroundColor Yellow
 Write-Host ""
 
-$services = @("db", "redis", "kafka", "app", "worker")
+$services = @("redis", "app", "worker")
 
 foreach ($service in $services) {
     try {
@@ -168,8 +168,7 @@ if (Test-Path $envFile) {
     $envContent = Get-Content $envFile -Raw
     
     $criticalVars = @(
-        "POSTGRES_PASSWORD",
-        "DATABASE_URL",
+        "REDIS_URL",
         "ADMIN_SEED_TOKEN",
         "APP_SECRET_KEY"
     )

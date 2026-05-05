@@ -22,7 +22,7 @@
           "custom": {
             "axisCenteredZero": false,
             "axisColorMode": "text",
-            "axisLabel": "Messages",
+            "axisLabel": "Pending entries",
             "axisPlacement": "auto",
             "barAlignment": 0,
             "drawStyle": "line",
@@ -96,12 +96,12 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "kafka_consumergroup_lag{consumergroup=\"webhook-workers\"}",
-          "legendFormat": "{{topic}} partition {{partition}}",
+          "expr": "redis_stream_group_pending{stream=\"events:in\",group=\"webhook-workers\"}",
+          "legendFormat": "events:in / webhook-workers",
           "refId": "A"
         }
       ],
-      "title": "Kafka Consumer Lag (CRITICAL METRIC)",
+      "title": "Worker Backlog (XPENDING — CRITICAL METRIC)",
       "type": "timeseries"
     },
     {
@@ -183,8 +183,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(kafka_produce_total{topic=\"webhooks.inbound\"}[5m])",
-          "legendFormat": "Produced",
+          "expr": "rate(stream_publish_total{stream=\"events:in\",status=\"success\"}[5m])",
+          "legendFormat": "Published",
           "refId": "A"
         },
         {
@@ -192,12 +192,12 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(kafka_consume_total{topic=\"webhooks.inbound\"}[5m])",
+          "expr": "rate(stream_consume_total{stream=\"events:in\"}[5m])",
           "legendFormat": "Consumed",
           "refId": "B"
         }
       ],
-      "title": "Kafka Throughput",
+      "title": "Stream Throughput",
       "type": "timeseries"
     },
     {
@@ -213,7 +213,7 @@
           "custom": {
             "axisCenteredZero": false,
             "axisColorMode": "text",
-            "axisLabel": "",
+            "axisLabel": "Entries",
             "axisPlacement": "auto",
             "barAlignment": 0,
             "drawStyle": "line",
@@ -279,19 +279,28 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "kafka_consumergroup_current_offset{consumergroup=\"webhook-workers\"}",
-          "legendFormat": "{{topic}} partition {{partition}}",
+          "expr": "redis_stream_length{stream=\"events:in\"}",
+          "legendFormat": "events:in",
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "redis_stream_length{stream=\"events:failed\"}",
+          "legendFormat": "events:failed (DLQ)",
+          "refId": "B"
         }
       ],
-      "title": "Consumer Offset Position",
+      "title": "Stream Length (XLEN)",
       "type": "timeseries"
     }
   ],
   "refresh": "10s",
   "schemaVersion": 38,
   "style": "dark",
-  "tags": ["easyhooks", "kafka"],
+  "tags": ["easyhooks", "redis-streams"],
   "templating": {
     "list": []
   },
@@ -301,8 +310,8 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "EasyHooks - Kafka Metrics",
-  "uid": "easyhooks-kafka",
+  "title": "EasyHooks - Redis Streams Metrics",
+  "uid": "easyhooks-streams",
   "version": 1,
   "weekStart": ""
 }

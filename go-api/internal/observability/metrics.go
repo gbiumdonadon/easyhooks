@@ -71,20 +71,20 @@ var (
 		[]string{"operation", "status"},
 	)
 
-	KafkaProduceTotal = promauto.NewCounterVec(
+	StreamConsumeTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "kafka_produce_total",
-			Help: "Total number of messages produced to Kafka",
+			Name: "stream_consume_total",
+			Help: "Total number of messages consumed from a Redis Stream consumer group",
 		},
-		[]string{"topic", "status"},
+		[]string{"stream", "consumer_group"},
 	)
 
-	KafkaConsumeTotal = promauto.NewCounterVec(
+	StreamPublishTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "kafka_consume_total",
-			Help: "Total number of messages consumed from Kafka",
+			Name: "stream_publish_total",
+			Help: "Total number of messages published to a Redis Stream (success or error)",
 		},
-		[]string{"topic", "consumer_group"},
+		[]string{"stream", "status"},
 	)
 
 	HTTPRequestDuration = promauto.NewHistogramVec(

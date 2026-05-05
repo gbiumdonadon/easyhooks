@@ -18,10 +18,8 @@ ENV CGO_ENABLED=0 \
 COPY go-api/go.mod go-api/go.sum ./
 RUN go mod download
 
-# Copy source
 COPY go-api/ ./
 
-# Build both binaries
 RUN go build -ldflags="-s -w" -o /app/api ./cmd/api
 RUN go build -ldflags="-s -w" -o /app/worker ./cmd/worker
 
@@ -30,12 +28,8 @@ FROM gcr.io/distroless/static-debian12
 
 WORKDIR /app
 
-# Binaries
 COPY --from=builder /app/api    /app/api
 COPY --from=builder /app/worker /app/worker
-
-# Migrations (applied at API startup via golang-migrate)
-COPY migrations/ /migrations/
 
 EXPOSE 8000
 

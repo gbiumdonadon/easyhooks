@@ -21,18 +21,20 @@ import (
 	"github.com/easyhooks/easyhooks/internal/config"
 	"github.com/easyhooks/easyhooks/internal/handler"
 	appmiddleware "github.com/easyhooks/easyhooks/internal/middleware"
+	"github.com/easyhooks/easyhooks/internal/redisstore"
 	"github.com/easyhooks/easyhooks/internal/security"
+	"github.com/easyhooks/easyhooks/internal/streams"
 )
 
 func newTestConfig() *config.Config {
 	return &config.Config{
-		DatabaseURL:              "postgres://test:test@localhost/test",
 		AdminSeedToken:           "test-admin",
 		AppSecretKey:             "test-app-key",
-		KafkaBootstrapServers:    "localhost:9092",
-		KafkaWebhookTopic:        "webhooks.inbound",
-		KafkaDLQTopic:            "webhooks.dlq",
-		KafkaConsumerGroup:       "test-workers",
+		EventStreamKey:           "events:in",
+		DLQStreamKey:             "events:failed",
+		ConsumerGroup:            "test-workers",
+		StreamBlockMs:            100,
+		StreamCount:              10,
 		WorkerMaxRetries:         3,
 		WorkerBackoffBaseMs:      100,
 		IdempotencyTTL:           86400,
@@ -41,6 +43,7 @@ func newTestConfig() *config.Config {
 		StreamHistoryCount:       50,
 		WSTokenTTL:               300,
 		AuthSessionTTL:           300,
+		SecretKeyBytes:           32,
 	}
 }
 
@@ -54,7 +57,7 @@ func newMiniredisClient(t *testing.T) (*miniredis.Miniredis, *redis.Client) {
 	return mr, client
 }
 
-// seedTenantInRedis sets up Redis keys for a tenant as CreateTenant would.
+// seedTenantInRedis sets up Redis keys for a tenant as service.CreateTenant would.
 func seedTenantInRedis(t *testing.T, rdb *redis.Client, tenantID uuid.UUID, rawSecret string) {
 	t.Helper()
 	hash, err := security.HashSecret(rawSecret)
@@ -175,4 +178,135 @@ func TestTenantAuth_HMACSignature(t *testing.T) {
 	r.ServeHTTP(rr, req)
 	assert.Equal(t, http.StatusOK, rr.Code)
 	assert.True(t, reached)
+}
+
+// --- Admin auth (Redis-backed) ---
+
+func TestAdminAuth_AcceptsSeededToken(t *testing.T) {
+	_, rdb := newMiniredisClient(t)
+	require.NoError(t, redisstore.SeedSuperAdmin(context.Background(), rdb, "super-secret"))
+
+	r := chi.NewRouter()
+	r.Group(func(r chi.Router) {
+		r.Use(appmiddleware.AdminAuth(rdb))
+		r.Get("/admin/ping", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/ping", nil)
+	req.Header.Set("Authorization", "Bearer super-secret")
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusOK, rr.Code)
+}
+
+func TestAdminAuth_RejectsWrongToken(t *testing.T) {
+	_, rdb := newMiniredisClient(t)
+	require.NoError(t, redisstore.SeedSuperAdmin(context.Background(), rdb, "super-secret"))
+
+	r := chi.NewRouter()
+	r.Group(func(r chi.Router) {
+		r.Use(appmiddleware.AdminAuth(rdb))
+		r.Get("/admin/ping", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/ping", nil)
+	req.Header.Set("Authorization", "Bearer wrong")
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusForbidden, rr.Code)
+}
+
+func TestAdminAuth_NotSeeded(t *testing.T) {
+	_, rdb := newMiniredisClient(t)
+
+	r := chi.NewRouter()
+	r.Group(func(r chi.Router) {
+		r.Use(appmiddleware.AdminAuth(rdb))
+		r.Get("/admin/ping", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/ping", nil)
+	req.Header.Set("Authorization", "Bearer anything")
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
+}
+
+// --- CreateTenant ---
+
+func TestCreateTenant_StoresKeysAndReturnsCredentials(t *testing.T) {
+	cfg := newTestConfig()
+	_, rdb := newMiniredisClient(t)
+	require.NoError(t, redisstore.SeedSuperAdmin(context.Background(), rdb, "admin-token"))
+
+	r := chi.NewRouter()
+	r.Group(func(r chi.Router) {
+		r.Use(appmiddleware.AdminAuth(rdb))
+		r.Post("/admin/tenants", handler.CreateTenant(rdb, cfg))
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/tenants", bytes.NewBufferString(`{"name":"acme"}`))
+	req.Header.Set("Authorization", "Bearer admin-token")
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusCreated, rr.Code)
+	var resp map[string]string
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&resp))
+	tenantID := resp["tenant_id"]
+	require.NotEmpty(t, tenantID)
+	require.NotEmpty(t, resp["secret_key"])
+	assert.Equal(t, "acme", resp["name"])
+
+	ctx := context.Background()
+	hash, err := rdb.Get(ctx, "tenant_auth:"+tenantID).Result()
+	require.NoError(t, err)
+	assert.NotEmpty(t, hash)
+	raw, err := rdb.Get(ctx, "tenant_hmac_key:"+tenantID).Result()
+	require.NoError(t, err)
+	assert.Equal(t, resp["secret_key"], raw)
+}
+
+// --- IngestWebhook ---
+
+func TestIngestWebhook_PublishesToEventStream(t *testing.T) {
+	cfg := newTestConfig()
+	_, rdb := newMiniredisClient(t)
+	tenantID := uuid.New()
+	rawSecret := "tenant-secret"
+	seedTenantInRedis(t, rdb, tenantID, rawSecret)
+
+	r := chi.NewRouter()
+	r.Group(func(r chi.Router) {
+		r.Use(appmiddleware.TenantAuth(rdb, cfg))
+		r.Post("/v1/webhooks/{tenant_id}", handler.IngestWebhook(rdb, cfg))
+	})
+
+	body := []byte(`{"event":"x"}`)
+	mac := hmac.New(sha256.New, []byte(rawSecret))
+	mac.Write(body)
+	sig := "sha256=" + fmt.Sprintf("%x", mac.Sum(nil))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/webhooks/"+tenantID.String(), bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Event-Id", "evt-1")
+	req.Header.Set("X-Webhook-Signature", sig)
+
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusAccepted, rr.Code)
+
+	entries, err := rdb.XRange(context.Background(), cfg.EventStreamKey, "-", "+").Result()
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, tenantID.String(), entries[0].Values[streams.FieldTenantID])
+	assert.Equal(t, "evt-1", entries[0].Values[streams.FieldEventID])
+	assert.Equal(t, string(body), entries[0].Values[streams.FieldPayload])
 }
