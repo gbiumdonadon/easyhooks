@@ -9,7 +9,12 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/easyhooks/easyhooks/internal/config"
+	"github.com/easyhooks/easyhooks/internal/observability"
 )
+
+// fallbackFanoutBufferSize matches the small profile default and is only used
+// when WSFanoutBufferSize is unset (e.g. tests that build a Config by hand).
+const fallbackFanoutBufferSize = 100
 
 // TenantFanout manages fan-out of Redis Stream events to multiple WebSocket subscribers.
 // A single XREAD loop feeds all subscriber channels, reducing Redis connections under load.
@@ -42,7 +47,11 @@ func (f *TenantFanout) Subscribe() (<-chan StreamEvent, func()) {
 
 	subID := f.nextSubID
 	f.nextSubID++
-	ch := make(chan StreamEvent, 100)
+	bufSize := f.cfg.WSFanoutBufferSize
+	if bufSize <= 0 {
+		bufSize = fallbackFanoutBufferSize
+	}
+	ch := make(chan StreamEvent, bufSize)
 	f.subs[subID] = ch
 
 	// Start reader goroutine on first subscriber
@@ -95,8 +104,11 @@ func (f *TenantFanout) fanOut(event StreamEvent) {
 		select {
 		case ch <- event:
 		default:
-			// Subscriber queue full — disconnect it
+			// Subscriber queue full — disconnect it. The metric lets operators
+			// see this happening at scale (ramp = need a larger profile or
+			// faster WS clients).
 			slog.Warn("Subscriber queue full, dropping", "tenant_id", f.tenantID, "sub_id", id)
+			observability.WebSocketSubscriberDroppedTotal.WithLabelValues(f.tenantID.String(), "buffer_full").Inc()
 			dead = append(dead, id)
 		}
 	}

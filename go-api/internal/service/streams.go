@@ -71,7 +71,11 @@ func ReadTenantHistory(ctx context.Context, rdb *goredis.Client, cfg *config.Con
 // StreamTenantEvents streams new events from a tenant's Redis Stream using XREAD BLOCK.
 // Sends events to the returned channel until ctx is cancelled.
 func StreamTenantEvents(ctx context.Context, rdb *goredis.Client, cfg *config.Config, tenantID uuid.UUID, startID string) <-chan StreamEvent {
-	ch := make(chan StreamEvent, 100)
+	bufSize := cfg.WSFanoutBufferSize
+	if bufSize <= 0 {
+		bufSize = 100
+	}
+	ch := make(chan StreamEvent, bufSize)
 	streamKey := TenantStreamKey(tenantID, cfg.TenantEventsStreamPrefix)
 
 	go func() {

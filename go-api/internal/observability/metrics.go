@@ -146,4 +146,49 @@ var (
 		},
 		[]string{"tenant_id", "tenant_tier"},
 	)
+
+	WebhookLoadShedTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "webhook_load_shed_total",
+			Help: "Total number of webhook ingestion requests rejected with HTTP 429 due to queue backpressure",
+		},
+		[]string{"tenant_id"},
+	)
+
+	IngestQueueDepth = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "ingest_queue_depth",
+			Help: "Last observed length of the ingestion stream (XLEN), polled by the queue-depth monitor",
+		},
+		[]string{"stream"},
+	)
+
+	IngestLoadSheddingActive = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "ingest_load_shedding_active",
+			Help: "1 when the ingestion is currently shedding load (queue depth crossed the high watermark), 0 otherwise",
+		},
+	)
+
+	WebSocketSubscriberDroppedTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "websocket_subscriber_dropped_total",
+			Help: "Total number of WebSocket subscribers disconnected by the fanout layer (e.g. slow consumer with full buffer)",
+		},
+		[]string{"tenant_id", "reason"},
+	)
+
+	easyhooksProfileInfo = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "easyhooks_profile_info",
+			Help: "Constant gauge (=1) labelled with the active EASYHOOKS_PROFILE; useful as a Grafana variable",
+		},
+		[]string{"profile"},
+	)
 )
+
+// RecordProfileInfo sets easyhooks_profile_info{profile=<active>} to 1 so
+// dashboards can pivot on the configured tier.
+func RecordProfileInfo(profile string) {
+	easyhooksProfileInfo.WithLabelValues(profile).Set(1)
+}

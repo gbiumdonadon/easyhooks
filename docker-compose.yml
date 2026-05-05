@@ -32,6 +32,19 @@ services:
       timeout: 3s
       retries: 5
 
+  # ---------------------------------------------------------------------------
+  # Capacity profile (small / medium / large)
+  # ---------------------------------------------------------------------------
+  # Set EASYHOOKS_PROFILE in your .env (or shell) to one of:
+  #   small  — pair with `mem_limit: 256m`
+  #   medium — pair with `mem_limit: 512m`
+  #   large  — pair with `mem_limit: 1g`
+  #   custom — set every memory-related env var explicitly
+  #
+  # The profile is propagated into both `app` and `worker` containers below.
+  # The mem_limit on the container side is the OS-level cap; the app uses
+  # GOMEMLIMIT (derived from the profile) so the GC works hard before hitting
+  # this cap and triggering the OOM killer.
   app:
     build:
       context: .
@@ -47,6 +60,12 @@ services:
       EVENT_STREAM_KEY: ${EVENT_STREAM_KEY:-events:in}
       DLQ_STREAM_KEY: ${DLQ_STREAM_KEY:-events:failed}
       CONSUMER_GROUP: ${CONSUMER_GROUP:-webhook-workers}
+      EASYHOOKS_PROFILE: ${EASYHOOKS_PROFILE:-small}
+    # Recommended container caps per profile:
+    #   small  -> mem_limit: 256m
+    #   medium -> mem_limit: 512m
+    #   large  -> mem_limit: 1g
+    # mem_limit: 256m
     depends_on:
       redis:
         condition: service_healthy
@@ -65,6 +84,9 @@ services:
       EVENT_STREAM_KEY: ${EVENT_STREAM_KEY:-events:in}
       DLQ_STREAM_KEY: ${DLQ_STREAM_KEY:-events:failed}
       CONSUMER_GROUP: ${CONSUMER_GROUP:-webhook-workers}
+      EASYHOOKS_PROFILE: ${EASYHOOKS_PROFILE:-small}
+    # Same recommendation as `app` — keep both containers on matching caps.
+    # mem_limit: 256m
     depends_on:
       redis:
         condition: service_healthy

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -32,6 +33,9 @@ func main() {
 		slog.Error("Failed to load config", "error", err)
 		os.Exit(1)
 	}
+
+	applyMemoryLimit(cfg)
+	observability.RecordProfileInfo(cfg.Profile)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -67,6 +71,17 @@ func main() {
 	// Per-tenant fan-out manager (used by the WebSocket handler).
 	fanoutMgr := service.NewFanoutManager()
 
+	// Queue depth monitor: samples XLEN every cfg.QueueDepthPollMs so that
+	// IngestWebhook can shed load (HTTP 429) without doing a Redis round-trip
+	// per request. Hysteresis between high/low watermarks prevents flapping.
+	queueMonitor := streams.NewQueueDepthMonitor(
+		rdb,
+		cfg.EventStreamKey,
+		int64(cfg.IngestMaxQueueDepth),
+		cfg.QueueDepthLowWaterPct,
+	)
+	go queueMonitor.Run(ctx, time.Duration(cfg.QueueDepthPollMs)*time.Millisecond)
+
 	// Router
 	r := chi.NewRouter()
 	r.Use(chiMiddleware.Recoverer)
@@ -94,7 +109,7 @@ func main() {
 	// Tenant routes (protected by TenantAuth)
 	r.Group(func(r chi.Router) {
 		r.Use(appmiddleware.TenantAuth(rdb, cfg))
-		r.Post("/v1/webhooks/{tenant_id}", handler.IngestWebhook(rdb, cfg))
+		r.Post("/v1/webhooks/{tenant_id}", handler.IngestWebhook(rdb, cfg, queueMonitor))
 		r.Post("/v1/tokens/{tenant_id}", handler.IssueToken(cfg))
 	})
 
@@ -126,4 +141,25 @@ func main() {
 		slog.Error("Graceful shutdown failed", "error", err)
 	}
 	slog.Info("API server stopped")
+}
+
+// applyMemoryLimit wires GOMEMLIMIT (Go 1.19+) so the GC works harder before
+// the container hits the Docker mem_limit and the OOM killer fires. We honour
+// an explicit GOMEMLIMIT env var (parsed by the runtime before main runs) and
+// only apply the profile-derived value when the user did not set their own.
+func applyMemoryLimit(cfg *config.Config) {
+	if _, ok := os.LookupEnv("GOMEMLIMIT"); ok {
+		slog.Info("Memory limit honoured from GOMEMLIMIT env var", "profile", cfg.Profile)
+		return
+	}
+	if cfg.GoMemLimitBytes <= 0 {
+		slog.Warn("No memory limit set; profile=custom without GOMEMLIMIT", "profile", cfg.Profile)
+		return
+	}
+	debug.SetMemoryLimit(cfg.GoMemLimitBytes)
+	slog.Info("Memory limit set",
+		"profile", cfg.Profile,
+		"gomemlimit_bytes", cfg.GoMemLimitBytes,
+		"gomemlimit_mib", cfg.GoMemLimitBytes/(1024*1024),
+	)
 }

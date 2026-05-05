@@ -20,6 +20,7 @@ PostgreSQL. Redis Streams compõem tanto a fila de trabalho (`events:in` /
 - [Quick Start (5 minutos)](#quick-start-5-minutos)
 - [URLs e portas](#urls-e-portas)
 - [Variáveis de ambiente](#variáveis-de-ambiente)
+- [Planejamento de capacidade](#planejamento-de-capacidade)
 - [Observabilidade](#observabilidade)
 - [Testes](#testes)
 - [Testes de carga](#testes-de-carga)
@@ -214,8 +215,9 @@ Todas configuráveis via `.env` na raiz. Copie `.env.example` → `.env`.
 
 | Variável | Descrição | Default |
 | --- | --- | --- |
+| `EASYHOOKS_PROFILE` | Perfil de capacidade (`small`/`medium`/`large`/`custom`) — define defaults de memória | `small` |
 | `REDIS_URL` | String de conexão Redis | `redis://redis:6379/0` |
-| `REDIS_POOL_SIZE` | Tamanho do pool Redis | `100` |
+| `REDIS_POOL_SIZE` | Tamanho do pool Redis (definido pelo perfil) | small=50, medium=100, large=200 |
 | `ADMIN_SEED_TOKEN` | Token Bearer bootstrap do admin **(DEVE MUDAR)** | *(gerado)* |
 | `APP_SECRET_KEY` | Chave para tokens WS **(DEVE MUDAR)** | *(gerada)* |
 | `EVENT_STREAM_KEY` | Stream da fila de trabalho | `events:in` |
@@ -229,8 +231,12 @@ Todas configuráveis via `.env` na raiz. Copie `.env.example` → `.env`.
 | `WS_TOKEN_TTL_SECONDS` | TTL do token de WS | `300` |
 | `AUTH_SESSION_TTL_SECONDS` | TTL do cache de sessão Bearer | `300` |
 | `TENANT_EVENTS_STREAM_PREFIX` | Prefixo dos streams por tenant | `stream:tenant:` |
-| `STREAM_MAX_LEN` | XADD MAXLEN ~ por stream de tenant | `1000` |
+| `STREAM_MAX_LEN` | XADD MAXLEN ~ por stream de tenant (definido pelo perfil) | small=1000, medium=5000, large=10000 |
 | `STREAM_HISTORY_COUNT` | Histórico no connect WS | `50` |
+| `WS_FANOUT_BUFFER_SIZE` | Buffer do canal por subscriber WS (definido pelo perfil) | small=100, medium=256, large=512 |
+| `INGEST_MAX_QUEUE_DEPTH` | High watermark de `XLEN events:in` — acima dele a API responde 429 (definido pelo perfil) | small=5000, medium=25000, large=50000 |
+| `QUEUE_DEPTH_POLL_MS` | Frequência com que a API amostra `XLEN` para o load shedder | `1000` |
+| `QUEUE_DEPTH_LOW_WATER_PCT` | Histerese: libera o shedding quando depth cai a `high * pct / 100` | `80` |
 | `CORS_ORIGINS` | Origens CORS | `http://localhost:3001,http://localhost:3000` |
 | `SECRET_KEY_BYTES` | Entropia do secret de tenant | `32` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Endpoint OTLP (Jaeger) | `http://jaeger:4317` |
@@ -246,6 +252,62 @@ Todas configuráveis via `.env` na raiz. Copie `.env.example` → `.env`.
 > **Produção:** sempre defina `ADMIN_SEED_TOKEN`, `APP_SECRET_KEY` (e
 > `GRAFANA_ADMIN_PASSWORD` ao habilitar monitoramento) via secret manager.
 > Reduza `TRACING_SAMPLE_RATE` para 0.1–0.2.
+
+---
+
+## Planejamento de capacidade
+
+O EasyHooks tem três perfis pré-tunados que escalam, em conjunto, limite de
+memória, pool do Redis, tamanho dos streams por tenant, buffers do fanout e o
+backpressure de ingestão. Escolha um perfil baseado no orçamento de memória
+do container que você pode dedicar.
+
+> **Garantia de comportamento.** O EasyHooks prioriza a integridade do
+> servidor. Sob carga extrema ele prefere **rejeitar requisições novas
+> com HTTP 429** a derrubar o serviço por falta de memória (OOM).
+
+| Perfil | Container recomendado | `GOMEMLIMIT` | `INGEST_MAX_QUEUE_DEPTH` | `STREAM_MAX_LEN` | `REDIS_POOL_SIZE` |
+| --- | --- | --- | --- | --- | --- |
+| `small`  | 256 MB | 200 MiB | 5 000  | 1 000  | 50  |
+| `medium` | 512 MB | 450 MiB | 25 000 | 5 000  | 100 |
+| `large`  | 1 GB   | 900 MiB | 50 000 | 10 000 | 200 |
+| `custom` | (seu)  | você define | você define | você define | você define |
+
+Selecione um perfil no `.env`:
+
+```env
+EASYHOOKS_PROFILE=medium
+```
+
+Qualquer env var individual ainda vence sobre o perfil — `EASYHOOKS_PROFILE=large`
+junto com `STREAM_MAX_LEN=20000` é uma combinação válida.
+
+### Comportamento medido sob saturação
+
+Números do `load_tests/scripts/run_capacity_benchmark.ps1` (máquina dev,
+100 VUs do k6, 30 s sustentados, tenant único, payload ≈ 100 B). A carga do k6
+excede de propósito a taxa de aceite de cada perfil para podermos comparar o
+backpressure.
+
+| Perfil | Cap do container | req/s ofertados | 202 aceitos (30 s) | 429 rejeitados (30 s) | p95 ingestão | RSS do app |
+| --- | --- | --- | --- | --- | --- | --- |
+| `small`  | 256 MB | ~4 700 | 5 446  | 135 812 | 1,58 ms | ~26 MiB |
+| `medium` | 512 MB | ~4 700 | 28 827 | 112 370 | 1,58 ms | ~26 MiB |
+| `large`  | 1 GB   | ~4 700 | 52 169 | 88 903  | 1,66 ms | ~27 MiB |
+
+Os três perfis ficaram de pé — sem OOM, sem crash, sem panic. O caminho do 429
+é barato (leitura atômica + retorno antecipado), por isso o p95 fica abaixo de
+2 ms mesmo sob backpressure pesado. Perfis maiores absorvem picos maiores
+antes de o shedding engatar.
+
+Veja [`docs/docs/getting-started/dimensionamento.md`](docs/docs/getting-started/dimensionamento.md)
+para o guia completo (knobs de tuning, observabilidade, metodologia, script
+de reprodução).
+
+> **Roadmap.** Um `sync.Pool` no caminho de ingestão foi propositalmente
+> deixado fora desta release — o padrão de alocação atual está confortavelmente
+> dentro do `GOMEMLIMIT` para a carga medida. Vamos revisitar se profiling
+> mostrar que virou hot path.
 
 ---
 

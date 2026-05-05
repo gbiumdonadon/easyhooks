@@ -20,6 +20,7 @@ per-tenant fan-out streams consumed by the WebSocket layer.
 - [Quick Start (5 minutes)](#quick-start-5-minutes)
 - [URLs and Ports](#urls-and-ports)
 - [Environment Variables](#environment-variables)
+- [Capacity planning](#capacity-planning)
 - [Observability](#observability)
 - [Testing](#testing)
 - [Load Testing](#load-testing)
@@ -220,8 +221,9 @@ to `.env` and customize.
 
 | Variable | Description | Default |
 | --- | --- | --- |
+| `EASYHOOKS_PROFILE` | Capacity profile (`small`/`medium`/`large`/`custom`) — drives memory-related defaults | `small` |
 | `REDIS_URL` | Redis connection string | `redis://redis:6379/0` |
-| `REDIS_POOL_SIZE` | Redis client pool size | `100` |
+| `REDIS_POOL_SIZE` | Redis client pool size (profile-driven) | small=50, medium=100, large=200 |
 | `ADMIN_SEED_TOKEN` | Bootstrap admin Bearer token **(MUST CHANGE)** | *(generated)* |
 | `APP_SECRET_KEY` | WS token signing key **(MUST CHANGE)** | *(generated)* |
 | `EVENT_STREAM_KEY` | Inbound work-queue stream | `events:in` |
@@ -235,8 +237,12 @@ to `.env` and customize.
 | `WS_TOKEN_TTL_SECONDS` | WebSocket token TTL | `300` |
 | `AUTH_SESSION_TTL_SECONDS` | Cached bearer session TTL | `300` |
 | `TENANT_EVENTS_STREAM_PREFIX` | Per-tenant stream prefix | `stream:tenant:` |
-| `STREAM_MAX_LEN` | Max length per tenant stream (XADD MAXLEN ~) | `1000` |
+| `STREAM_MAX_LEN` | Max length per tenant stream (profile-driven) | small=1000, medium=5000, large=10000 |
 | `STREAM_HISTORY_COUNT` | History size on WS connect | `50` |
+| `WS_FANOUT_BUFFER_SIZE` | Buffered channel per WS subscriber (profile-driven) | small=100, medium=256, large=512 |
+| `INGEST_MAX_QUEUE_DEPTH` | High watermark on `XLEN events:in` — above it the API returns 429 (profile-driven) | small=5000, medium=25000, large=50000 |
+| `QUEUE_DEPTH_POLL_MS` | How often the API samples `XLEN` for the load shedder | `1000` |
+| `QUEUE_DEPTH_LOW_WATER_PCT` | Hysteresis: release shedding when depth drops to `high * pct / 100` | `80` |
 | `CORS_ORIGINS` | Allowed CORS origins | `http://localhost:3001,http://localhost:3000` |
 | `SECRET_KEY_BYTES` | Tenant secret entropy | `32` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP endpoint (Jaeger) | `http://jaeger:4317` |
@@ -252,6 +258,59 @@ to `.env` and customize.
 > **Production:** always set `ADMIN_SEED_TOKEN`, `APP_SECRET_KEY` (and
 > `GRAFANA_ADMIN_PASSWORD` when enabling monitoring) via a secret manager.
 > Rotate before promoting. Adjust `TRACING_SAMPLE_RATE` to 0.1–0.2.
+
+---
+
+## Capacity planning
+
+EasyHooks ships three pre-tuned profiles that scale memory limits, Redis pool
+size, per-tenant stream caps, fanout buffers and ingestion backpressure
+together. Pick one based on the container memory budget you can give it.
+
+> **Behavioural guarantee.** EasyHooks prioritises server integrity. Under
+> extreme load it prefers to **reject new requests with HTTP 429** rather
+> than crash the service via OOM.
+
+| Profile | Recommended container | `GOMEMLIMIT` | `INGEST_MAX_QUEUE_DEPTH` | `STREAM_MAX_LEN` | `REDIS_POOL_SIZE` |
+| --- | --- | --- | --- | --- | --- |
+| `small`  | 256 MB | 200 MiB | 5 000  | 1 000  | 50  |
+| `medium` | 512 MB | 450 MiB | 25 000 | 5 000  | 100 |
+| `large`  | 1 GB   | 900 MiB | 50 000 | 10 000 | 200 |
+| `custom` | (yours)| set yourself | set yourself | set yourself | set yourself |
+
+Pick a profile in `.env`:
+
+```env
+EASYHOOKS_PROFILE=medium
+```
+
+Any individual env var still wins over the profile, so `EASYHOOKS_PROFILE=large`
+plus `STREAM_MAX_LEN=20000` is a valid combination.
+
+### Measured behaviour at saturation
+
+Numbers from `load_tests/scripts/run_capacity_benchmark.ps1` (single dev box,
+100 k6 VUs, 30 s sustained, single tenant, payload ≈ 100 B). The k6 workload
+exceeds every profile's accept rate on purpose so we can compare backpressure.
+
+| Profile | Container cap | Total req/s offered | 202 Accepted (30 s) | 429 Shed (30 s) | p95 latency | App RSS |
+| --- | --- | --- | --- | --- | --- | --- |
+| `small`  | 256 MB | ~4 700 | 5 446  | 135 812 | 1.58 ms | ~26 MiB |
+| `medium` | 512 MB | ~4 700 | 28 827 | 112 370 | 1.58 ms | ~26 MiB |
+| `large`  | 1 GB   | ~4 700 | 52 169 | 88 903  | 1.66 ms | ~27 MiB |
+
+All three profiles stayed up — no OOM, no crash, no panics. The 429 path is
+cheap (atomic read + early return), so p95 ingest latency stays sub-2 ms even
+under heavy backpressure. Larger profiles absorb bigger bursts before
+shedding engages.
+
+See [`docs/docs/getting-started/sizing.md`](docs/docs/getting-started/sizing.md)
+for the full guide (tuning knobs, observability, methodology, reproduction
+script).
+
+> **Roadmap.** A `sync.Pool` for the ingestion path is intentionally not in
+> this release — current allocation patterns are well within `GOMEMLIMIT` for
+> the measured load. We will revisit if profiling shows it becomes a hot spot.
 
 ---
 

@@ -276,6 +276,45 @@ func TestCreateTenant_StoresKeysAndReturnsCredentials(t *testing.T) {
 
 // --- IngestWebhook ---
 
+// stubShedder is a tiny LoadShedder used to drive the 429 path in tests.
+type stubShedder struct{ shed bool }
+
+func (s *stubShedder) ShouldShed() bool { return s.shed }
+
+func TestIngestWebhook_RejectsWith429WhenShedderEngaged(t *testing.T) {
+	cfg := newTestConfig()
+	_, rdb := newMiniredisClient(t)
+	tenantID := uuid.New()
+	rawSecret := "tenant-secret"
+	seedTenantInRedis(t, rdb, tenantID, rawSecret)
+
+	r := chi.NewRouter()
+	r.Group(func(r chi.Router) {
+		r.Use(appmiddleware.TenantAuth(rdb, cfg))
+		r.Post("/v1/webhooks/{tenant_id}", handler.IngestWebhook(rdb, cfg, &stubShedder{shed: true}))
+	})
+
+	body := []byte(`{"event":"x"}`)
+	mac := hmac.New(sha256.New, []byte(rawSecret))
+	mac.Write(body)
+	sig := "sha256=" + fmt.Sprintf("%x", mac.Sum(nil))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/webhooks/"+tenantID.String(), bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Event-Id", "evt-shed")
+	req.Header.Set("X-Webhook-Signature", sig)
+
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusTooManyRequests, rr.Code)
+	assert.Equal(t, "5", rr.Header().Get("Retry-After"))
+	// Nothing should have been pushed onto the stream.
+	entries, err := rdb.XRange(context.Background(), cfg.EventStreamKey, "-", "+").Result()
+	require.NoError(t, err)
+	assert.Empty(t, entries)
+}
+
 func TestIngestWebhook_PublishesToEventStream(t *testing.T) {
 	cfg := newTestConfig()
 	_, rdb := newMiniredisClient(t)
@@ -286,7 +325,7 @@ func TestIngestWebhook_PublishesToEventStream(t *testing.T) {
 	r := chi.NewRouter()
 	r.Group(func(r chi.Router) {
 		r.Use(appmiddleware.TenantAuth(rdb, cfg))
-		r.Post("/v1/webhooks/{tenant_id}", handler.IngestWebhook(rdb, cfg))
+		r.Post("/v1/webhooks/{tenant_id}", handler.IngestWebhook(rdb, cfg, nil))
 	})
 
 	body := []byte(`{"event":"x"}`)

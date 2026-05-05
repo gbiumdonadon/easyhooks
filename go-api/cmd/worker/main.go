@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 
 	"github.com/easyhooks/easyhooks/internal/config"
@@ -23,6 +24,9 @@ func main() {
 		slog.Error("Failed to load config", "error", err)
 		os.Exit(1)
 	}
+
+	applyMemoryLimit(cfg)
+	observability.RecordProfileInfo(cfg.Profile)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -98,4 +102,24 @@ func main() {
 	}
 
 	slog.Info("Worker stopped")
+}
+
+// applyMemoryLimit mirrors cmd/api: honour an explicit GOMEMLIMIT, otherwise
+// apply the profile-derived value so the worker stays within the container
+// budget under heavy retry/backoff fan-out.
+func applyMemoryLimit(cfg *config.Config) {
+	if _, ok := os.LookupEnv("GOMEMLIMIT"); ok {
+		slog.Info("Memory limit honoured from GOMEMLIMIT env var", "profile", cfg.Profile)
+		return
+	}
+	if cfg.GoMemLimitBytes <= 0 {
+		slog.Warn("No memory limit set; profile=custom without GOMEMLIMIT", "profile", cfg.Profile)
+		return
+	}
+	debug.SetMemoryLimit(cfg.GoMemLimitBytes)
+	slog.Info("Memory limit set",
+		"profile", cfg.Profile,
+		"gomemlimit_bytes", cfg.GoMemLimitBytes,
+		"gomemlimit_mib", cfg.GoMemLimitBytes/(1024*1024),
+	)
 }

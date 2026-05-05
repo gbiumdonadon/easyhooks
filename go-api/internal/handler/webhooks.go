@@ -15,14 +15,30 @@ import (
 	"github.com/easyhooks/easyhooks/internal/streams"
 )
 
+// LoadShedder is the minimal contract IngestWebhook needs to decide whether
+// the ingestion stream is saturated and new requests should be rejected with
+// HTTP 429. Pass nil to disable load shedding (e.g. in unit tests).
+type LoadShedder interface {
+	ShouldShed() bool
+}
+
 // IngestWebhook handles POST /v1/webhooks/{tenant_id} by appending the event to
 // the Redis Stream cfg.EventStreamKey for the worker to pick up. Protected by
-// TenantAuth middleware.
-func IngestWebhook(rdb *goredis.Client, cfg *config.Config) http.HandlerFunc {
+// TenantAuth middleware. When shedder reports ShouldShed()==true, the request
+// is rejected with 429 + Retry-After before any Redis round-trip.
+func IngestWebhook(rdb *goredis.Client, cfg *config.Config, shedder LoadShedder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		tenant, ok := middleware.TenantFromContext(r.Context())
 		if !ok {
 			writeError(w, http.StatusUnauthorized, "Unauthenticated")
+			return
+		}
+
+		if shedder != nil && shedder.ShouldShed() {
+			w.Header().Set("Retry-After", "5")
+			observability.WebhookLoadShedTotal.WithLabelValues(tenant.TenantID.String()).Inc()
+			observability.WebhookRequestsTotal.WithLabelValues(tenant.TenantID.String(), "shed").Inc()
+			writeError(w, http.StatusTooManyRequests, "Ingestion queue saturated; retry later")
 			return
 		}
 
