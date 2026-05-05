@@ -22,7 +22,7 @@ Plataforma multi-tenant de **ingestão, processamento idempotente e distribuiç�
 - [Desenvolvimento sem Docker (opcional)](#desenvolvimento-sem-docker-opcional)
 - [Testes](#testes)
 - [Editando a documentação](#editando-a-documentação)
-- [Migrations (Alembic)](#migrations-alembic)
+- [Migrations (SQL / golang-migrate)](#migrations-sql--golang-migrate)
 - [Troubleshooting](#troubleshooting)
 - [Contribuição](#contribuição)
 - [Licença](#licença)
@@ -45,7 +45,7 @@ flowchart LR
     Redis --> API
     API -->|"send_text"| Cliente
     Prometheus --> Grafana[Grafana]
-    Locust[Locust] -->|"load test"| API
+    K6[k6] -->|"load test"| API
 ```
 
 - **`app`** — Go/Chi: Admin API, ingestor de webhooks, emissor de tokens WS, endpoint WebSocket, middleware de métricas HTTP.
@@ -69,7 +69,7 @@ flowchart LR
 | Cache / Pub-Sub | Redis 7 |
 | Banco | PostgreSQL 16 |
 | Observabilidade | Prometheus + Grafana + Jaeger (OpenTelemetry) |
-| Testes de Carga | Locust (cenários HTTP + WebSocket) |
+| Testes de Carga | Grafana k6 (`load_tests/k6/`, HTTP + WebSocket) |
 | Testes | `testing` stdlib + `testify` + `miniredis` |
 | Docs | Docusaurus 3 (Node 20 build → Nginx Alpine runtime) |
 | Infra | Docker Compose |
@@ -125,7 +125,7 @@ A primeira subida demora ~2-3 min (build Go + download das images base). Subidas
 
 ### 3. Verificar que tudo subiu
 
-- API: <http://localhost:8000/docs> (Swagger UI).
+- API: <http://localhost:8000/health> (health check).
 - Documentação: <http://localhost:3001>.
 - Redis: `docker compose exec redis redis-cli ping` → `PONG`.
 - Kafka: `docker compose exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list`.
@@ -189,9 +189,8 @@ Para detalhes (HMAC, WebSocket, DLQ, exemplos em outras linguagens) veja a doc e
 
 | Serviço | URL local | Porta interna | Descrição |
 | --- | --- | --- | --- |
-| API (Swagger UI) | <http://localhost:8000/docs> | 8000 | OpenAPI interativo |
-| API (ReDoc) | <http://localhost:8000/redoc> | 8000 | Documentação alternativa |
-| API root | <http://localhost:8000/> | 8000 | FastAPI |
+| API health | <http://localhost:8000/health> | 8000 | Health check |
+| API root | <http://localhost:8000/> | 8000 | API Go (Chi) |
 | Métricas | <http://localhost:8000/metrics> | 8000 | Métricas Prometheus |
 | Documentação | <http://localhost:3001> | 80 | Site Docusaurus (Nginx) |
 | **Grafana** | <http://localhost:3000> | 3000 | Dashboards (credenciais do `.env`) |
@@ -320,62 +319,22 @@ Para documentação detalhada, veja <http://localhost:3001/observability/monitor
 
 ```
 .
-├── src/                       # Código da aplicação
-│   ├── main.py                # Entry FastAPI
-│   ├── worker.py              # Entry Kafka consumer
-│   ├── config.py              # Settings (Pydantic)
-│   ├── database.py            # Engine + session factory
-│   ├── redis_client.py        # Redis async client + DI
-│   ├── security.py            # Hash/verify secret + HMAC
-│   ├── dependencies.py        # Auth dependencies (admin, tenant)
-│   ├── middleware/            # Middlewares FastAPI
-│   │   └── metrics_middleware.py  # HTTP metrics → Prometheus
-│   ├── observability/         # Prometheus metrics + tracing
-│   │   ├── metrics.py         # Counters, histograms, gauges
-│   │   └── tracing.py         # OpenTelemetry / Jaeger
-│   ├── models/                # SQLAlchemy models
-│   ├── schemas/               # Pydantic schemas
-│   ├── routers/               # FastAPI routers
-│   │   ├── admin.py           # POST /admin/tenants
-│   │   ├── webhooks.py        # POST /v1/webhooks/{id}
-│   │   ├── tokens.py          # POST /v1/tokens/{id}
-│   │   └── ws.py              # WS /ws/events/{id}
-│   └── services/              # Lógica de negócio
-│       ├── tenant_service.py
-│       ├── webhook_service.py
-│       ├── webhook_processor.py
-│       ├── kafka_producer.py
-│       ├── event_streams.py
-│       ├── ws_fanout.py
-│       └── ws_token.py
-├── load_tests/                # Testes de carga (Locust)
-│   ├── locustfile.py          # Usuários WebhookUser + WebSocketUser
-│   ├── config.py              # Configurações via variáveis de ambiente
-│   ├── scenarios/             # Cenários: baseline, throughput, stress...
-│   ├── utils/                 # tenant_factory, hmac_helpers, metrics_collector
-│   ├── scripts/               # prepare_system (.sh/.ps1)
-│   └── reports/               # Relatórios exportados
-├── observability/             # Configuração da stack de observabilidade
-│   ├── prometheus/
-│   │   └── prometheus.yml     # Scrape configs
-│   └── grafana/
-│       ├── provisioning/      # Datasources + dashboards automáticos
-│       └── dashboards/        # JSONs: Overview, Kafka, Load Test
-├── tests/                     # pytest (6 grupos)
-├── migrations/                # Alembic migrations
-├── scripts/
-│   └── seed_admin.py          # Idempotente: cria superadmin
+├── go-api/                    # API + worker (Go)
+│   ├── cmd/api                # Entry HTTP (Chi)
+│   ├── cmd/worker             # Entry consumer Kafka
+│   └── internal/              # handlers, services, kafka, redis, db, security…
+├── load_tests/                # Testes de carga (k6 + scripts)
+│   ├── k6/scenarios/          # baseline, throughput, websocket_scale…
+│   ├── scripts/               # create_tenant_pool, prepare_system…
+│   └── docker-compose.loadtest.yml
+├── migrations/                # SQL up/down (golang-migrate)
+├── observability/             # Prometheus, Grafana, Jaeger
 ├── docs/                      # Site Docusaurus
-│   ├── docs/                  # Conteúdo .md
-│   ├── docusaurus.config.js
-│   ├── sidebars.js
-│   ├── package.json
-│   └── Dockerfile             # Multi-stage build → Nginx
-├── docker-compose.yml         # Stack completa (app + infra + observabilidade)
-├── Dockerfile                 # Imagem Python (app + worker)
-├── pyproject.toml
-├── .env.example               # Template de variáveis de ambiente
-└── README.md
+├── docker-compose.yml
+├── Dockerfile                 # Build multi-stage Go → distroless (api + worker)
+├── .env.example
+├── README.md
+└── README.pt-br.md
 ```
 
 ---
@@ -452,7 +411,7 @@ Todas as variáveis podem ser configuradas via arquivo `.env` na raiz do projeto
 
 | Variável | Descrição | Exemplo |
 | --- | --- | --- |
-| `DATABASE_URL` | String de conexão PostgreSQL | `postgresql+asyncpg://webhooks:senha@db:5432/webhooks` |
+| `DATABASE_URL` | String de conexão PostgreSQL | `postgres://webhooks:senha@db:5432/webhooks?sslmode=disable` |
 | `POSTGRES_USER` | Usuário PostgreSQL | `webhooks` |
 | `POSTGRES_PASSWORD` | Senha PostgreSQL | *(gerada)* |
 | `POSTGRES_DB` | Nome do banco PostgreSQL | `webhooks` |
@@ -481,7 +440,6 @@ Todas as variáveis podem ser configuradas via arquivo `.env` na raiz do projeto
 | `GRAFANA_ADMIN_USER` | Usuário admin do Grafana | `admin` |
 | `GRAFANA_ADMIN_PASSWORD` | Senha admin do Grafana **(DEVE MUDAR)** | *(gerada)* |
 | `GRAFANA_SERVER_ROOT_URL` | URL pública raiz do Grafana | `http://localhost:3000` |
-| `UVICORN_WORKERS` | Processos worker do Uvicorn | `1` (use o nº de CPUs em produção) |
 | `LOADTEST_ADMIN_TOKEN` | Token admin para testes de carga (igual ao `ADMIN_SEED_TOKEN`) | *(mesmo que ADMIN_SEED_TOKEN)* |
 | `LOADTEST_API_BASE_URL` | URL alvo dos testes de carga | `http://localhost:8000` |
 
@@ -491,7 +449,7 @@ Todas as variáveis podem ser configuradas via arquivo `.env` na raiz do projeto
 
 ## Desenvolvimento sem Docker (opcional)
 
-Recomendado para iteração rápida em código Python (hot reload via uvicorn).
+Útil para iterar na API e no worker em Go com a infra já no Compose.
 
 ### 1. Subir só a infra com Docker
 
@@ -499,105 +457,74 @@ Recomendado para iteração rápida em código Python (hot reload via uvicorn).
 docker compose up -d db redis kafka
 ```
 
-### 2. Criar venv e instalar deps
+### 2. Variáveis apontando para localhost
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate          # bash/zsh
-.venv\Scripts\Activate.ps1         # PowerShell
-pip install -e ".[dev]"
-```
-
-### 3. Configurar variáveis (apontar para localhost)
-
-```bash
-export DATABASE_URL="postgresql+asyncpg://webhooks:changeme123@localhost:5432/webhooks"
+export DATABASE_URL="postgres://webhooks:changeme123@localhost:5432/webhooks?sslmode=disable"
 export REDIS_URL="redis://localhost:6379/0"
 export KAFKA_BOOTSTRAP_SERVERS="localhost:9092"
 export ADMIN_SEED_TOKEN="<seu-token-seguro>"
 export APP_SECRET_KEY="<sua-chave-segura>"
 ```
 
-### 4. Migrations + seed + run
+### 3. Rodar API e worker
 
 ```bash
-alembic upgrade head
-python scripts/seed_admin.py
+cd go-api
+go run ./cmd/api
 
-# Terminal 1: API
-uvicorn src.main:app --reload --port 8000
-
-# Terminal 2: Worker
-python -m src.worker
+# outro terminal
+cd go-api
+go run ./cmd/worker
 ```
+
+As migrations e o seed de admin executam automaticamente na subida da API (ver `go-api/cmd/api/main.go`).
 
 ---
 
 ## Testes de Carga
 
-O EasyHooks inclui uma suite completa de testes de carga com Locust em `load_tests/`.
+Suite **Grafana k6** em `load_tests/k6/`. Pool de tenants: `load_tests/scripts/create_tenant_pool.sh` (`curl` + `jq`).
 
-### Execução Rápida
+### Execução rápida
 
 ```bash
-# 1. Instalar dependências
-pip install -r load_tests/requirements.txt
-
-# 2. Criar pool de tenants (requer o stack rodando)
+export LOADTEST_ADMIN_TOKEN="$ADMIN_SEED_TOKEN"
+export LOADTEST_API_BASE_URL=http://localhost:8000
 cd load_tests
-python utils/tenant_factory.py --create --count 50
-
-# 3. Teste rápido headless (60s, 20 usuários)
-python -m locust -f locustfile.py --headless -u 20 -r 5 --run-time 60s --host http://localhost:8000
-
-# 4. Ou abrir a Web UI em http://localhost:8089
-python -m locust -f locustfile.py --host http://localhost:8000
+./scripts/create_tenant_pool.sh
+k6 run k6/scenarios/baseline.js
 ```
 
-### Cenários Disponíveis
+Com Docker (sem k6 local): ver `load_tests/README.md` e `docker-compose.loadtest.yml`.
 
-| Cenário | Arquivo | Objetivo |
+### Cenários
+
+| Cenário | Script | Objetivo |
 | --- | --- | --- |
-| Baseline | `scenarios/baseline.py` | Estabelecer baseline em carga normal |
-| Throughput | `scenarios/throughput.py` | Taxa máxima de ingestão de webhooks |
-| WebSocket Scale | `scenarios/websocket_scale.py` | Conexões WS simultâneas |
-| Multi-Tenant | `scenarios/multi_tenant.py` | Isolamento por tenant sob carga |
-| Stress | `scenarios/stress.py` | Encontrar ponto de saturação |
+| Baseline | `k6/scenarios/baseline.js` | Carga moderada |
+| Throughput | `k6/scenarios/throughput.js` | Maior RPS sustentado |
+| WebSocket Scale | `k6/scenarios/websocket_scale.js` | Muitas conexões WS |
+| Multi-Tenant | `k6/scenarios/multi_tenant.js` | Carga distribuída no pool |
+| Stress | `k6/scenarios/stress.js` | Saturação |
 
-### Visualização no Grafana
+O dashboard Grafana **EasyHooks Load Test** mostra métricas **da aplicação** (Prometheus), não métricas internas do k6.
 
-Com um teste em andamento, abra o dashboard **EasyHooks Load Test** em <http://localhost:3000/d/loadtest-overview> para ver RPS por endpoint, percentis de latência e taxa de erros em tempo real.
-
-Veja `load_tests/README.md` para o guia completo incluindo testes distribuídos com múltiplos workers.
+Veja `load_tests/README.md` para variáveis de ambiente e `make loadtest-*`.
 
 ---
 
 ## Testes
 
-A suite tem **29 testes** distribuídos em 6 grupos:
-
-- **Group 1 — Governance** (5): admin auth, criação de tenant, sync com Redis.
-- **Group 2 — Security** (5): isolamento multi-tenant, Bearer + HMAC.
-- **Group 3 — Ingestion** (3): produção em Kafka, headers, validação `X-Event-Id`.
-- **Group 4 — Idempotency** (1): lock no Redis evita reprocessamento.
-- **Group 5 — Resilience** (2): retry exponencial e DLQ após esgotar tentativas.
-- **Group 6 — Distribution** (13): tokens HMAC, WebSocket, Pub/Sub end-to-end.
+Testes automatizados em **`go-api/`** (`testing` + `testify` + `miniredis` onde aplicável).
 
 ```bash
-# Rodar tudo
-pytest
-
-# Rodar um grupo
-pytest tests/test_group_2_security.py -v
-
-# Rodar com cobertura
-pytest --cov=src --cov-report=term-missing
-
-# Apenas um teste
-pytest tests/test_group_4_idempotency.py::test_should_skip_already_processed_event -v
+cd go-api
+go test ./...
+go test -race ./...
 ```
 
-> Os grupos 4-6 usam **`testcontainers[kafka]`**, que sobe um broker Kafka real efêmero. Requer Docker rodando. Tempo total da suite: ~50s.
+> Testes de integração end-to-end com Kafka/Postgres em CI podem ser adicionados depois (ex.: Testcontainers); hoje a validação completa usa o stack Docker + smoke manual.
 
 ---
 
@@ -646,23 +573,11 @@ docker compose up -d --build docs   # disponível em http://localhost:3001
 
 ---
 
-## Migrations (Alembic)
+## Migrations (SQL / golang-migrate)
 
-```bash
-# Aplicar todas as migrations pendentes
-alembic upgrade head
+Ficheiros versionados em `migrations/*.up.sql` / `*.down.sql`. A API aplica migrations automaticamente no arranque (`go-api/cmd/api/main.go`).
 
-# Criar nova migration baseada nos models
-alembic revision --autogenerate -m "add column foo to tenants"
-
-# Reverter última
-alembic downgrade -1
-
-# Ver histórico
-alembic history
-```
-
-Dentro do Docker, o `app` roda `alembic upgrade head` automaticamente no `command:` do compose.
+Para criar uma nova revisão, adicione um par `NNNNNN_description.up.sql` / `.down.sql` e suba a API (ou use a CLI `migrate` com a mesma `DATABASE_URL`).
 
 ---
 
@@ -730,28 +645,22 @@ ports:
 
 ## Contribuição
 
-### Workflow TDD
+### Testes
 
-Este projeto foi implementado seguindo TDD estrito (Red → Green → Refactor). Mantenha o padrão:
+1. Adicione ou estenda `*_test.go` em `go-api/`.
+2. `cd go-api && go test ./...` até ficar verde.
+3. Refatore mantendo os testes.
 
-1. Antes de adicionar feature, escreva o teste em `tests/test_group_<N>_<tema>.py`.
-2. Rode `pytest tests/test_group_X.py -v` e veja falhar.
-3. Implemente o mínimo para passar.
-4. Refatore mantendo verde.
+### Padrões (Go)
 
-### Padrões de código
-
-- **Type hints obrigatórios** em assinaturas públicas.
-- **Async-first**: tudo IO-bound usa `async/await`.
-- **Sem comentários óbvios** — comente apenas decisões não triviais.
-- **Pydantic** para schemas (request/response).
-- **SQLAlchemy 2.0 style** (`select(...)`, sessão async).
+- Pacotes pequenos sob `go-api/internal/`.
+- Propague `context.Context` em chamadas I/O.
 
 ### Antes de abrir PR
 
 ```bash
-pytest                         # 29/29 verde
-cd docs && npm run build       # build limpo
+cd go-api && go test ./...
+cd docs && npm run build
 ```
 
 ### Estrutura de commit
@@ -787,8 +696,8 @@ Este projeto é disponibilizado "como está" para fins de estudo e uso livre. Em
 ## Recursos
 
 - **Doc do produto:** <http://localhost:3001> (após `docker compose up -d docs`)
-- **Swagger UI:** <http://localhost:8000/docs>
+- **API health:** <http://localhost:8000/health>
 
 ---
 
-**Construído com ❤️ usando FastAPI, Kafka, Redis e PostgreSQL**
+**Construído com Go, Kafka, Redis e PostgreSQL**

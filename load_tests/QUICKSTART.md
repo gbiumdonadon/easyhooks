@@ -1,90 +1,24 @@
-# Quick Start - Load Testing
+# Load tests — quick start (k6)
 
-## TL;DR
-
-```bash
-# 1. Preparar sistema
-./load_tests/scripts/prepare_system.ps1  # Windows
-# ou
-sudo ./load_tests/scripts/prepare_system.sh  # Linux/macOS
-
-# 2. Subir stack
-docker compose -f docker-compose.yml -f docker-compose.loadtest.yml up -d
-
-# 3. Criar tenants
-cd load_tests
-python utils/tenant_factory.py --create --count 50
-
-# 4. Instalar deps
-pip install -r requirements.txt
-
-# 5. Rodar teste
-python quick_start.py baseline
-```
-
-## Cenários Disponíveis
-
-| Cenário | Comando | Duração | Objetivo |
-|---------|---------|---------|----------|
-| Baseline | `python quick_start.py baseline` | 10min | Estabelecer baseline (100 RPS) |
-| Throughput | `python quick_start.py throughput` | 30min | Medir throughput máximo (até 5000 RPS) |
-| WebSocket Scale | `python quick_start.py websocket_scale` | 60min | Testar 10k conexões WebSocket |
-| Multi-tenant | `python quick_start.py multi_tenant` | 30min | Validar isolamento entre tenants |
-| Stress | `python quick_start.py stress` | 60min | Encontrar breaking point |
-
-## Monitoramento
-
-- **Locust UI**: http://localhost:8089
-- **Grafana**: http://localhost:3000 (admin/admin)
-- **Prometheus**: http://localhost:9090
-- **Jaeger**: http://localhost:16686
-
-## Verificar Setup
+1. Start the stack: `docker compose up -d` (repo root).
+2. Set `LOADTEST_ADMIN_TOKEN` to the same value as `ADMIN_SEED_TOKEN` (e.g. in `.env`).
+3. Create tenants and run baseline:
 
 ```bash
 cd load_tests
-chmod +x scripts/verify_setup.sh
-./scripts/verify_setup.sh
+export LOADTEST_API_BASE_URL=http://localhost:8000
+export LOADTEST_ADMIN_TOKEN="$ADMIN_SEED_TOKEN"
+bash scripts/create_tenant_pool.sh
+k6 run k6/scenarios/baseline.js
 ```
 
-## Métricas Críticas
+Or use Docker only:
 
-Monitorar durante o teste:
-
-1. **Consumer Lag** (mais crítico!)
-   - Saudável: < 100
-   - Atenção: 100-500
-   - Crítico: > 1000
-
-2. **Taxa de Erro**
-   - Saudável: < 1%
-   - Atenção: 1-5%
-   - Crítico: > 5%
-
-3. **Latência p95**
-   - Boa: < 200ms
-   - Aceitável: 200-500ms
-   - Lenta: > 500ms
-
-## Troubleshooting
-
-### Tenant pool empty
 ```bash
-python utils/tenant_factory.py --create --count 50
+docker compose -f load_tests/docker-compose.loadtest.yml run --rm loadtest-init
+docker compose -f load_tests/docker-compose.loadtest.yml run --rm --no-deps \
+  -e TENANT_POOL_FILE=/load_tests/.tenant_pool.json \
+  k6 run k6/scenarios/baseline.js
 ```
 
-### Consumer lag alto
-```bash
-docker compose up -d --scale worker=8
-```
-
-### WebSocket connection errors
-```bash
-# Windows: Docker Desktop -> Settings -> Resources
-# Linux/macOS:
-ulimit -n 65536
-```
-
-## Documentação Completa
-
-Veja [`load_tests/README.md`](README.md) para documentação detalhada.
+See [README.md](./README.md) for all scenarios and tuning variables.

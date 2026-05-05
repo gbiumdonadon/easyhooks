@@ -213,26 +213,26 @@ Trace 3: attempt=3, failed at 10:00:03
 Trace 4: sent to DLQ at 10:00:06
 ```
 
-## Custom Spans
+## Custom spans (Go)
 
-Add custom spans in your code:
+Tracing is initialized in `go-api/internal/observability/tracing.go` (`InitTracing`, global propagator). Handlers and the worker create spans with the **OpenTelemetry Go SDK** (`go.opentelemetry.io/otel`).
 
-```python
-from src.observability.tracing import trace_span, add_span_attributes
+Example pattern inside a handler:
 
-# Create custom span
-with trace_span("my_operation", {"tenant_id": tenant_id}):
-    result = await do_something()
-    
-    # Add attributes dynamically
-    add_span_attributes(result_count=len(result))
+```go
+ctx, span := observability.Tracer("easyhooks").Start(r.Context(), "my_operation")
+defer span.End()
+span.SetAttributes(attribute.String("tenant_id", tenantID.String()))
+// ... do work with ctx ...
 ```
+
+Use `attribute.*` from `go.opentelemetry.io/otel/attribute` and pass the derived `ctx` into downstream calls so child spans attach correctly.
 
 ## Context Propagation
 
 Traces propagate automatically across:
-- FastAPI → Kafka (via message headers)
-- Kafka → Worker (extracted from headers)
+- **Go API** → Kafka (via message headers)
+- Kafka → **Go worker** (extracted from headers)
 - Worker → Redis (in-process)
 - Redis → WebSocket (in-process)
 
@@ -286,33 +286,15 @@ Grafana can show traces from Jaeger:
 
 ## Best Practices
 
-### 1. Add Meaningful Attributes
+### 1. Add meaningful attributes
 
-```python
-# Good
-with trace_span("process_order", {
-    "tenant_id": tenant_id,
-    "order_id": order_id,
-    "amount": order.amount,
-}):
-    ...
+Prefer stable, low-cardinality keys (`tenant_id`, `event_id`, `http.route`) on spans. Avoid high-cardinality blobs (full bodies, unbounded strings).
 
-# Bad
-with trace_span("process"):  # No context
-    ...
-```
+### 2. Use span events for state changes
 
-### 2. Use Events for State Changes
+In Go, use `span.AddEvent("retry", trace.WithAttributes(attribute.Int("attempt", 2)))` (or equivalent) for retries, cache hits, and fallbacks.
 
-```python
-from src.observability.tracing import add_span_event
-
-add_span_event("retry", {"attempt": 2, "reason": "timeout"})
-add_span_event("cache_hit", {"key": cache_key})
-add_span_event("fallback", {"reason": "service_unavailable"})
-```
-
-### 3. Don't Over-Instrument
+### 3. Don't over-instrument
 
 **Good balance:**
 - Service boundaries (API, Worker, External calls)
@@ -324,19 +306,9 @@ add_span_event("fallback", {"reason": "service_unavailable"})
 - Trivial operations (< 1ms)
 - High-frequency loops
 
-### 4. Correlate with Logs
+### 4. Correlate with logs
 
-Include trace ID in logs:
-
-```python
-from opentelemetry import trace
-
-span = trace.get_current_span()
-ctx = span.get_span_context()
-logger.info("Processing event", extra={
-    "trace_id": format(ctx.trace_id, '032x'),
-})
-```
+Include `trace_id` / `span_id` from `span.SpanContext()` in structured logs (`log/slog` fields) so logs and Jaeger views line up.
 
 ## Configuration
 
@@ -386,13 +358,7 @@ Reduce sampling rate:
 TRACING_SAMPLE_RATE=0.1
 ```
 
-Or disable for specific endpoints:
-```python
-# In FastAPI
-@app.get("/health", include_in_schema=False)
-async def health():
-    return {"status": "ok"}  # Not traced
-```
+Or keep health checks cheap: the `GET /health` handler in the Go API should stay minimal; lower `TRACING_SAMPLE_RATE` in production rather than excluding every path unless you measure overhead.
 
 ## Next Steps
 

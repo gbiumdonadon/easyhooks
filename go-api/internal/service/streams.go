@@ -39,7 +39,7 @@ func PublishTenantEvent(ctx context.Context, rdb *goredis.Client, cfg *config.Co
 }
 
 // ReadTenantHistory reads up to count recent events in chronological order (oldest first).
-// Uses XREVRANGE then reverses, matching Python's read_tenant_history.
+// Uses XREVRANGE then reverses for tenant event history.
 func ReadTenantHistory(ctx context.Context, rdb *goredis.Client, cfg *config.Config, tenantID uuid.UUID, count int) ([]StreamEvent, error) {
 	streamKey := TenantStreamKey(tenantID, cfg.TenantEventsStreamPrefix)
 	results, err := rdb.XRevRangeN(ctx, streamKey, "+", "-", int64(count)).Result()

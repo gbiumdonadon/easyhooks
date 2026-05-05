@@ -108,33 +108,19 @@ foreach ($service in $services) {
 
 Write-Host ""
 
-# 3. Verificar Locust
-Write-Host "LOCUST" -ForegroundColor Yellow
+# 3. Verificar k6 (local ou Docker)
+Write-Host "K6" -ForegroundColor Yellow
 Write-Host ""
 
 try {
-    $locustVersion = locust --version 2>$null
+    $k6v = k6 version 2>$null
     if ($LASTEXITCODE -eq 0) {
-        Write-Status "Locust instalado" "OK" "$locustVersion"
+        Write-Status "k6 instalado localmente" "OK" "$k6v"
     } else {
-        Write-Status "Locust não encontrado" "ERROR" "Execute: pip install -r load_tests/requirements.txt"
-        $allOk = $false
+        Write-Status "k6 não está no PATH" "INFO" "Use a imagem Docker: grafana/k6 (ver load_tests/Dockerfile)"
     }
 } catch {
-    Write-Status "Locust não encontrado" "ERROR" "Execute: pip install -r load_tests/requirements.txt"
-    $allOk = $false
-}
-
-# Verificar se Locust está rodando no Docker
-try {
-    $locustMaster = docker compose ps locust-master --format json 2>$null | ConvertFrom-Json
-    if ($locustMaster -and $locustMaster.State -eq "running") {
-        Write-Status "Locust Master rodando (Docker)" "OK" "Porta: 8089"
-    } else {
-        Write-Status "Locust Master não está rodando" "INFO" "Opcional - use locust CLI local"
-    }
-} catch {
-    Write-Status "Locust Master não encontrado" "INFO" "Opcional - use locust CLI local"
+    Write-Status "k6 não está no PATH" "INFO" "Use a imagem Docker: grafana/k6"
 }
 
 Write-Host ""
@@ -147,7 +133,7 @@ $tenantPoolFile = "load_tests\.tenant_pool.json"
 if (Test-Path $tenantPoolFile) {
     try {
         $tenantPool = Get-Content $tenantPoolFile | ConvertFrom-Json
-        $tenantCount = $tenantPool.tenants.Count
+        $tenantCount = @($tenantPool).Count
         
         if ($tenantCount -gt 0) {
             Write-Status "Pool de tenants existe" "OK" "$tenantCount tenants encontrados"
@@ -156,7 +142,7 @@ if (Test-Path $tenantPoolFile) {
                 Write-Status "Poucos tenants no pool" "WARN" "Recomendado: 50+ para testes de carga"
             }
         } else {
-            Write-Status "Pool de tenants está vazio" "ERROR" "Execute: python load_tests/utils/tenant_factory.py --create --count 50"
+            Write-Status "Pool de tenants está vazio" "ERROR" "Execute: bash load_tests/scripts/create_tenant_pool.sh (Git Bash/WSL)"
             $allOk = $false
         }
     } catch {
@@ -164,7 +150,7 @@ if (Test-Path $tenantPoolFile) {
         $allOk = $false
     }
 } else {
-    Write-Status "Pool de tenants não existe" "ERROR" "Execute: python load_tests/utils/tenant_factory.py --create --count 50"
+    Write-Status "Pool de tenants não existe" "ERROR" "Execute: bash load_tests/scripts/create_tenant_pool.sh (Git Bash/WSL)"
     $allOk = $false
 }
 
@@ -232,7 +218,6 @@ Write-Host ""
 
 $endpoints = @{
     "API" = "http://localhost:8000/health"
-    "Locust UI" = "http://localhost:8089"
     "Grafana" = "http://localhost:3000"
     "Prometheus" = "http://localhost:9090"
 }
@@ -257,11 +242,10 @@ Write-Host "ARQUIVOS DE TESTE" -ForegroundColor Yellow
 Write-Host ""
 
 $testFiles = @(
-    "load_tests/locustfile.py",
-    "load_tests/config.py",
-    "load_tests/scenarios/baseline.py",
-    "load_tests/scenarios/throughput.py",
-    "load_tests/utils/tenant_factory.py"
+    "load_tests/k6/scenarios/baseline.js",
+    "load_tests/k6/scenarios/throughput.js",
+    "load_tests/k6/lib/hmac.js",
+    "load_tests/scripts/create_tenant_pool.sh"
 )
 
 foreach ($file in $testFiles) {
@@ -281,11 +265,11 @@ if ($allOk) {
     Write-Host "DIAGNOSTICO COMPLETO - AMBIENTE OK" -ForegroundColor Green
     Write-Host ""
     Write-Host "Proximos passos:" -ForegroundColor Yellow
-    Write-Host "  1. Executar teste baseline:" -ForegroundColor Gray
-    Write-Host "     locust -f load_tests/scenarios/baseline.py --host=http://localhost:8000" -ForegroundColor Gray
+    Write-Host "  1. Executar k6 baseline (Docker):" -ForegroundColor Gray
+    Write-Host "     docker compose -f load_tests/docker-compose.loadtest.yml run --rm --no-deps -e TENANT_POOL_FILE=/load_tests/.tenant_pool.json k6 run k6/scenarios/baseline.js" -ForegroundColor Gray
     Write-Host ""
-    Write-Host "  2. Acessar interface web:" -ForegroundColor Gray
-    Write-Host "     http://localhost:8089" -ForegroundColor Gray
+    Write-Host "  2. Grafana (metricas da API):" -ForegroundColor Gray
+    Write-Host "     http://localhost:3000/d/loadtest-overview" -ForegroundColor Gray
 } else {
     Write-Host "DIAGNOSTICO COMPLETO - PROBLEMAS ENCONTRADOS" -ForegroundColor Red
     Write-Host ""
@@ -298,11 +282,11 @@ Write-Host ""
 Write-Host "INFORMACOES UTEIS" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  Documentacao:" -ForegroundColor Gray
-Write-Host "    - Guia de parametros: load_tests/PARAMETROS_TESTE.md" -ForegroundColor Gray
+Write-Host "    - Variaveis de ambiente: load_tests/README.md" -ForegroundColor Gray
 Write-Host "    - README completo: load_tests/README.md" -ForegroundColor Gray
 Write-Host ""
 Write-Host "  Comandos uteis:" -ForegroundColor Gray
 Write-Host "    - Ver logs: docker compose logs -f app" -ForegroundColor Gray
 Write-Host "    - Recriar servicos: docker compose down -v; docker compose up -d" -ForegroundColor Gray
-Write-Host "    - Criar tenants: python load_tests/utils/tenant_factory.py --create --count 50" -ForegroundColor Gray
+Write-Host "    - Criar tenants: bash load_tests/scripts/create_tenant_pool.sh" -ForegroundColor Gray
 Write-Host ""

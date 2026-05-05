@@ -1,7 +1,4 @@
-# Makefile for EasyHooks Load Testing
-#
-# This Makefile provides convenient shortcuts for running load tests
-# and managing the load testing infrastructure.
+# Makefile for EasyHooks load testing (k6 + Docker helpers)
 #
 # Prerequisites:
 #   - Docker and Docker Compose installed
@@ -76,13 +73,13 @@ loadtest-custom: ## Run custom scenario
 # ============================================================================
 
 .PHONY: loadtest-ui
-loadtest-ui: ## Open Locust UI in browser
-	@echo "Opening Locust UI..."
-	@open http://localhost:8089 2>/dev/null || xdg-open http://localhost:8089 2>/dev/null || start http://localhost:8089 2>/dev/null || echo "Please open http://localhost:8089 in your browser"
+loadtest-ui: ## Hint: k6 has no web UI — open Grafana load-test dashboard
+	@echo "k6 is CLI-only. Open Grafana: http://localhost:3000/d/loadtest-overview"
+	@open http://localhost:3000/d/loadtest-overview 2>/dev/null || xdg-open http://localhost:3000/d/loadtest-overview 2>/dev/null || start http://localhost:3000/d/loadtest-overview 2>/dev/null || true
 
 .PHONY: loadtest-logs
-loadtest-logs: ## Show Locust logs
-	@cd load_tests && docker compose -f docker-compose.loadtest.yml logs -f
+loadtest-logs: ## Show last k6 / init compose logs (if any)
+	@cd load_tests && docker compose -f docker-compose.loadtest.yml logs --tail=200 2>/dev/null || true
 
 .PHONY: loadtest-status
 loadtest-status: ## Show status of load test containers
@@ -106,12 +103,12 @@ loadtest-restart: loadtest-stop loadtest-local ## Restart load test
 # ============================================================================
 
 .PHONY: loadtest-tenants-create
-loadtest-tenants-create: ## Create tenant pool (50 tenants)
-	@cd load_tests && python utils/tenant_factory.py --create --count 50
+loadtest-tenants-create: ## Create tenant pool (50 tenants via curl)
+	@cd load_tests && bash scripts/create_tenant_pool.sh
 
 .PHONY: loadtest-tenants-list
-loadtest-tenants-list: ## List tenants in pool
-	@cd load_tests && python utils/tenant_factory.py --list
+loadtest-tenants-list: ## Show tenant pool JSON (requires jq)
+	@test -f load_tests/.tenant_pool.json && jq 'length' load_tests/.tenant_pool.json || echo "No load_tests/.tenant_pool.json"
 
 .PHONY: loadtest-tenants-clean
 loadtest-tenants-clean: ## Remove tenant pool file
@@ -142,12 +139,12 @@ loadtest-jaeger: ## Open Jaeger traces
 # ============================================================================
 
 .PHONY: loadtest-build
-loadtest-build: ## Rebuild Locust Docker image
+loadtest-build: ## Rebuild k6 Docker image (load_tests/Dockerfile)
 	@cd load_tests && docker compose -f docker-compose.loadtest.yml build
 
 .PHONY: loadtest-shell
-loadtest-shell: ## Open shell in Locust container
-	@cd load_tests && docker compose -f docker-compose.loadtest.yml run --rm locust-master /bin/bash
+loadtest-shell: ## Open shell in k6 image (debug)
+	@cd load_tests && docker compose -f docker-compose.loadtest.yml run --rm --entrypoint sh k6 -c "echo k6 image ready; sh"
 
 # ============================================================================
 # Quick Start Workflow

@@ -20,7 +20,7 @@ func (rw *responseWriter) WriteHeader(code int) {
 	rw.ResponseWriter.WriteHeader(code)
 }
 
-// Normalization patterns — match Python's HTTPMetricsMiddleware exactly.
+// Normalization patterns for stable Prometheus label cardinalities.
 var normalizationPatterns = []struct {
 	re          *regexp.Regexp
 	replacement string
@@ -40,7 +40,7 @@ func normalizePath(path string) string {
 
 // HTTPMetrics records http_requests_total and http_request_duration_seconds.
 // Skips /metrics to avoid recursive counting.
-// Mirrors Python's HTTPMetricsMiddleware in metrics_middleware.py.
+// HTTP request metrics middleware for Prometheus.
 func HTTPMetrics(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/metrics" {

@@ -16,8 +16,8 @@ This directory contains the complete observability implementation for the EasyHo
 
 ```
 ┌─────────────┐
-│  FastAPI    │──── /metrics ────┐
-│  App        │                   │
+│  Go API     │──── /metrics ────┐
+│  (Chi)      │                   │
 └─────────────┘                   │
                                   ▼
 ┌─────────────┐            ┌──────────────┐
@@ -222,18 +222,15 @@ Edit `observability/grafana/provisioning/datasources/datasources.yml` to:
 
 ## 🧪 Testing
 
-Run observability tests:
+Run the Go unit tests (including handler and middleware coverage used by metrics):
 
 ```bash
-pytest tests/test_observability.py -v
+cd go-api && go test ./...
 ```
 
-Tests verify:
-- Metrics endpoint is accessible
-- Prometheus format is correct
-- Metrics can be incremented
-- Tracing setup works
-- Span creation functions
+Manual smoke checks:
+- Metrics endpoint: `curl -sSf http://localhost:8000/metrics | head`
+- Tracing: enable `TRACING_ENABLED=true` and inspect spans in Jaeger after sending a webhook
 
 ## 🚨 Alerting (Production)
 
@@ -331,24 +328,23 @@ groups:
 
 When adding new metrics:
 
-1. Define in `src/observability/metrics.py`
-2. Instrument code appropriately
+1. Define counters/histograms in `go-api/internal/observability/metrics.go` (or adjacent packages)
+2. Instrument handlers/worker code
 3. Add to Grafana dashboards
-4. Document in monitoring.md
-5. Add tests in test_observability.py
+4. Document in `docs/docs/observability/monitoring.md`
+5. Add or extend `go test` coverage under `go-api/`
 
 When adding traces:
 
-1. Use `trace_span()` context manager
-2. Add meaningful attributes
-3. Document expected spans
-4. Update tracing.md
+1. Use the OpenTelemetry Go SDK (`go.opentelemetry.io/otel`) in the API or worker
+2. Add meaningful span attributes
+3. Document expected spans in `docs/docs/observability/tracing.md`
 
 ## 📖 Further Reading
 
 - [Prometheus Best Practices](https://prometheus.io/docs/practices/)
 - [Grafana Dashboard Design](https://grafana.com/docs/grafana/latest/dashboards/)
-- [OpenTelemetry Python](https://opentelemetry.io/docs/instrumentation/python/)
+- [OpenTelemetry Go](https://opentelemetry.io/docs/languages/go/)
 - [Jaeger Architecture](https://www.jaegertracing.io/docs/latest/architecture/)
 
 ---

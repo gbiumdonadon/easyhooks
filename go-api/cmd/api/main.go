@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -158,7 +159,11 @@ func main() {
 
 // runMigrations applies pending migrations using golang-migrate.
 func runMigrations(databaseURL string) error {
-	fsrc, err := (&file.File{}).Open("file:///migrations")
+	migrationPath, err := resolveMigrationsPath()
+	if err != nil {
+		return err
+	}
+	fsrc, err := (&file.File{}).Open(migrationPath)
 	if err != nil {
 		return fmt.Errorf("open migrations source: %w", err)
 	}
@@ -171,6 +176,24 @@ func runMigrations(databaseURL string) error {
 	}
 	slog.Info("Migrations applied")
 	return nil
+}
+
+// resolveMigrationsPath returns the golang-migrate file:// URL for the migrations directory.
+// In Docker the migrations are copied to /migrations/; in local dev they live at ../migrations
+// relative to the go-api/ working directory.
+func resolveMigrationsPath() (string, error) {
+	if _, err := os.Stat("/migrations"); err == nil {
+		return "file:///migrations", nil
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("get working directory: %w", err)
+	}
+	abs, err := filepath.Abs(filepath.Join(cwd, "..", "migrations"))
+	if err != nil {
+		return "", fmt.Errorf("resolve migrations path: %w", err)
+	}
+	return "file://" + filepath.ToSlash(abs), nil
 }
 
 // seedAdmin creates the bootstrap admin user from ADMIN_SEED_TOKEN if not present.

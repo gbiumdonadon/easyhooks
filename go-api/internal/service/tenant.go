@@ -20,7 +20,7 @@ type CreateTenantResult struct {
 }
 
 // CreateTenant creates a new tenant, hashes its secret, persists to DB, and caches in Redis.
-// Mirrors Python's create_tenant in tenant_service.py.
+// CreateTenant provisions tenant credentials and Redis-backed secrets.
 func CreateTenant(ctx context.Context, store *queries.Store, rdb *goredis.Client, cfg *config.Config, name string, adminID uuid.UUID) (CreateTenantResult, error) {
 	rawSecret, err := security.GenerateSecretKey(cfg.SecretKeyBytes)
 	if err != nil {

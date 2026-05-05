@@ -370,6 +370,7 @@
   "time": { "from": "now-15m", "to": "now" },
   "timepicker": {},
   "timezone": "browser",
+  "description": "Métricas Prometheus da API Go durante testes de carga (ex.: k6). Métricas nativas do k6 não são importadas neste dashboard.",
   "title": "EasyHooks - Load Test",
   "uid": "loadtest-overview",
   "version": 1,

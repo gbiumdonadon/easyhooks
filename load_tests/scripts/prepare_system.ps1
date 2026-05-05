@@ -106,10 +106,9 @@ Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Next steps:" -ForegroundColor White
 Write-Host "  1. Start the stack:" -ForegroundColor Gray
-Write-Host "     docker compose -f docker-compose.yml -f docker-compose.loadtest.yml up -d" -ForegroundColor Gray
+Write-Host "     docker compose up -d" -ForegroundColor Gray
 Write-Host "  2. Create test tenants:" -ForegroundColor Gray
-Write-Host "     cd load_tests" -ForegroundColor Gray
-Write-Host "     python utils/tenant_factory.py --create --count 50" -ForegroundColor Gray
-Write-Host "  3. Run load test:" -ForegroundColor Gray
-Write-Host "     locust -f scenarios/baseline.py --host=http://localhost:8000" -ForegroundColor Gray
+Write-Host "     cd load_tests; bash scripts/create_tenant_pool.sh" -ForegroundColor Gray
+Write-Host "  3. Run k6 (Docker):" -ForegroundColor Gray
+Write-Host "     docker compose -f load_tests/docker-compose.loadtest.yml run --rm --no-deps -e TENANT_POOL_FILE=/load_tests/.tenant_pool.json k6 run k6/scenarios/baseline.js" -ForegroundColor Gray
 Write-Host ""

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/google/uuid"
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/easyhooks/easyhooks/internal/config"
@@ -26,9 +25,12 @@ func CreateTenant(store *queries.Store, rdb *goredis.Client, cfg *config.Config)
 			return
 		}
 
-		// Use a fixed admin ID placeholder; real admin ID lookup is not in scope for this handler
-		// (admin context not injected — using zero UUID as created_by placeholder consistent with seeded admin)
-		adminID := uuid.Nil
+		admins, err := store.GetAllAdminUsers(r.Context())
+		if err != nil || len(admins) == 0 {
+			writeError(w, http.StatusInternalServerError, "No admin user available for tenant creation")
+			return
+		}
+		adminID := admins[0].ID
 		result, err := service.CreateTenant(r.Context(), store, rdb, cfg, req.Name, adminID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "Failed to create tenant")

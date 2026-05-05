@@ -73,7 +73,7 @@ func AdminAuth(store *queries.Store) func(http.Handler) http.Handler {
 }
 
 // TenantAuth validates tenant credentials (HMAC or Bearer) and injects AuthenticatedTenant.
-// Replicates Python's get_authenticated_tenant dependency from dependencies.py.
+// Resolves the authenticated tenant from context (Bearer + tenant id).
 func TenantAuth(rdb *goredis.Client, cfg *config.Config) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -143,7 +143,7 @@ func authenticateViaHMAC(ctx context.Context, tenantID uuid.UUID, signature stri
 }
 
 // authenticateViaBearer uses a two-level Redis cache to avoid repeated bcrypt calls.
-// Mirrors Python's _authenticate_via_bearer in dependencies.py exactly.
+// Bearer session authentication via Redis cache and bcrypt fallback.
 func authenticateViaBearer(ctx context.Context, tenantID uuid.UUID, rawSecret string, rdb *goredis.Client, cfg *config.Config) (AuthenticatedTenant, error) {
 	// Level 1: fast session cache — avoids bcrypt on every request
 	shortHash := fmt.Sprintf("%x", sha256.Sum256([]byte(rawSecret)))[:16]

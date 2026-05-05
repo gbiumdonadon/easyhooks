@@ -16,7 +16,7 @@ The Easyhooks uses a **two-level credentials** model:
 
 ## 1. Getting the `ADMIN_SEED_TOKEN`
 
-The administrative token is seeded into the database by the [`scripts/seed_admin.py`](https://github.com/) script automatically on the first startup of the `app` container when you provide the `ADMIN_SEED_TOKEN` variable.
+On the first startup of the `app` container, when `ADMIN_SEED_TOKEN` is set and no admin user exists yet, the Go API seeds a **superadmin** user whose Bearer token is that same value (see `seedAdmin` in `go-api/cmd/api/main.go`).
 
 Configure in the `.env` file:
 

@@ -196,7 +196,7 @@ export default function WebhookSimulator({
       <h3>Simulador de Webhook (The Tester)</h3>
       <p className="playground-hint">
         O payload abaixo é enviado byte-a-byte para o ingestor; o HMAC é calculado sobre{' '}
-        <strong>exatamente</strong> esse texto (como em <code>src/security.py</code>).
+        <strong>exatamente</strong> esse texto (como em <code>go-api/internal/security/security.go</code>).
       </p>
 
       <label className="playground-label">

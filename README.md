@@ -41,7 +41,7 @@ flowchart LR
     Redis --> API
     API -->|"send_text"| Client
     Prometheus --> Grafana[Grafana]
-    Locust[Locust] -->|"load test"| API
+    K6[k6] -->|"load test"| API
 ```
 
 - **`app`** — Go/Chi: Admin API, webhook ingestor, WS token issuer, WebSocket endpoint, HTTP metrics middleware.
@@ -65,7 +65,7 @@ flowchart LR
 | Cache / Streams | Redis 7 (`go-redis/v9`) |
 | Database | PostgreSQL 16 |
 | Observability | Prometheus + Grafana + Jaeger (OpenTelemetry) |
-| Load Testing | Locust (HTTP + WebSocket scenarios) |
+| Load Testing | Grafana k6 (HTTP + WebSocket scenarios under `load_tests/k6/`) |
 | Tests | `testing` stdlib + `testify` + `miniredis` |
 | Docs | Docusaurus 3 (Node 20 build → Nginx Alpine runtime) |
 | Infra | Docker Compose |
@@ -185,9 +185,8 @@ For details (HMAC, WebSocket, DLQ, examples in other languages), see the documen
 
 | Service | Local URL | Internal Port | Description |
 | --- | --- | --- | --- |
-| API (Swagger UI) | <http://localhost:8000/docs> | 8000 | Interactive OpenAPI |
-| API (ReDoc) | <http://localhost:8000/redoc> | 8000 | Alternative docs |
-| API root | <http://localhost:8000/> | 8000 | FastAPI |
+| API | <http://localhost:8000/health> | 8000 | Health check (no bundled Swagger in distroless image) |
+| API root | <http://localhost:8000/> | 8000 | Go API (Chi) |
 | Metrics | <http://localhost:8000/metrics> | 8000 | Prometheus metrics |
 | Documentation | <http://localhost:3001> | 80 | Docusaurus site (Nginx) |
 | **Grafana** | <http://localhost:3000> | 3000 | Dashboards (credentials from `.env`) |
@@ -205,7 +204,7 @@ All variables can be configured via `.env` file in the project root. Copy `.env.
 
 | Variable | Description | Example |
 | --- | --- | --- |
-| `DATABASE_URL` | PostgreSQL connection string | `postgresql+asyncpg://webhooks:password@db:5432/webhooks` |
+| `DATABASE_URL` | PostgreSQL connection string | `postgres://webhooks:password@db:5432/webhooks?sslmode=disable` |
 | `POSTGRES_USER` | PostgreSQL username | `webhooks` |
 | `POSTGRES_PASSWORD` | PostgreSQL password | `change-this-password` |
 | `POSTGRES_DB` | PostgreSQL database name | `webhooks` |
@@ -234,7 +233,6 @@ All variables can be configured via `.env` file in the project root. Copy `.env.
 | `GRAFANA_ADMIN_USER` | Grafana admin username | `admin` |
 | `GRAFANA_ADMIN_PASSWORD` | Grafana admin password **(MUST CHANGE)** | *(generated)* |
 | `GRAFANA_SERVER_ROOT_URL` | Grafana public root URL | `http://localhost:3000` |
-| `UVICORN_WORKERS` | Uvicorn worker processes | `1` (set to CPU count for production) |
 | `LOADTEST_ADMIN_TOKEN` | Admin token for load tests (mirrors `ADMIN_SEED_TOKEN`) | *(same as ADMIN_SEED_TOKEN)* |
 | `LOADTEST_API_BASE_URL` | Target URL for load tests | `http://localhost:8000` |
 
@@ -357,30 +355,18 @@ For detailed documentation, see <http://localhost:3001/observability/monitoring>
 
 ## Testing
 
-The test suite has **29 tests** distributed across 6 groups:
-
-- **Group 1 — Governance** (5): admin auth, tenant creation, Redis sync.
-- **Group 2 — Security** (5): multi-tenant isolation, Bearer + HMAC.
-- **Group 3 — Ingestion** (3): Kafka production, headers, `X-Event-Id` validation.
-- **Group 4 — Idempotency** (1): Redis lock prevents reprocessing.
-- **Group 5 — Resilience** (2): exponential retry and DLQ after exhausting attempts.
-- **Group 6 — Distribution** (13): HMAC tokens, WebSocket, Pub/Sub end-to-end.
+Automated tests live under **`go-api/`** and use the Go `testing` package plus `testify` and `miniredis` where Redis behaviour is needed.
 
 ```bash
-# Run all tests
-pytest
+cd go-api
+go test ./...
 
-# Run a specific group
-pytest tests/test_group_2_security.py -v
-
-# Run with coverage
-pytest --cov=src --cov-report=term-missing
-
-# Run a single test
-pytest tests/test_group_4_idempotency.py::test_should_skip_already_processed_event -v
+# Optional: race detector and coverage
+go test -race ./...
+go test -cover ./...
 ```
 
-> Groups 4-6 use **`testcontainers[kafka]`**, which spins up an ephemeral Kafka broker. Requires Docker running. Total suite time: ~50s.
+> Integration-style tests that spin up Kafka/Postgres in Docker are not wired in CI yet; use the Docker Compose stack and manual checks, or extend `go test` with something like Testcontainers when you need full-stack parity.
 
 ---
 
@@ -419,38 +405,41 @@ npm run serve      # serves docs/build/ at http://localhost:3000
 
 ## Load Testing
 
-EasyHooks ships with a complete Locust-based load testing suite under `load_tests/`.
+EasyHooks ships with a **Grafana k6** suite under `load_tests/k6/`. Tenant pools are created with shell + `curl`/`jq` (see `load_tests/scripts/create_tenant_pool.sh`).
 
-### Quick Run
+### Quick run
 
 ```bash
-# 1. Install load test dependencies
-pip install -r load_tests/requirements.txt
+# From repo root — stack must be up; set tokens in .env or export
+export LOADTEST_ADMIN_TOKEN="$ADMIN_SEED_TOKEN"
+export LOADTEST_API_BASE_URL=http://localhost:8000
 
-# 2. Create tenant pool (requires the stack to be running)
 cd load_tests
-python utils/tenant_factory.py --create --count 50
-
-# 3. Run a low-load test (headless, 60s)
-python -m locust -f locustfile.py --headless -u 20 -r 5 --run-time 60s --host http://localhost:8000
-
-# 4. Or launch the web UI (http://localhost:8089)
-python -m locust -f locustfile.py --host http://localhost:8000
+./scripts/create_tenant_pool.sh
+k6 run k6/scenarios/baseline.js
 ```
 
-### Available Scenarios
+With Docker (no local k6 install):
 
-| Scenario | File | Purpose |
+```bash
+docker compose -f load_tests/docker-compose.loadtest.yml run --rm loadtest-init
+docker compose -f load_tests/docker-compose.loadtest.yml run --rm k6 run k6/scenarios/baseline.js
+```
+
+### Available scenarios
+
+| Scenario | Script | Purpose |
 | --- | --- | --- |
-| Baseline | `scenarios/baseline.py` | Establish normal-load baseline |
-| Throughput | `scenarios/throughput.py` | Maximum webhook ingestion rate |
-| WebSocket Scale | `scenarios/websocket_scale.py` | Concurrent WS connections |
-| Multi-Tenant | `scenarios/multi_tenant.py` | Per-tenant isolation under load |
-| Stress | `scenarios/stress.py` | Find saturation point |
+| Baseline | `k6/scenarios/baseline.js` | Normal-load ramp |
+| Throughput | `k6/scenarios/throughput.js` | Higher sustained RPS |
+| WebSocket scale | `k6/scenarios/websocket_scale.js` | Many concurrent WS clients |
+| Multi-tenant | `k6/scenarios/multi_tenant.js` | Spread load across tenant pool |
+| Stress | `k6/scenarios/stress.js` | Aggressive ramp toward saturation |
+| Custom | `k6/scenarios/custom_scenario.js` | Env-tunable smoke / custom mix |
 
 ### Metrics in Grafana
 
-While a test is running, open the **EasyHooks Load Test** dashboard at <http://localhost:3000/d/loadtest-overview> to see:
+While a test is running, open the **EasyHooks Load Test** dashboard at <http://localhost:3000/d/loadtest-overview> to see **application** Prometheus metrics (the dashboard does not ingest k6’s own metrics):
 
 - Request rate per endpoint (RPS)
 - Latency percentiles (p50 / p95 / p99)
@@ -468,34 +457,29 @@ While a test is running, open the **EasyHooks Load Test** dashboard at <http://l
 
 > **Rule of thumb:** Keep ramp-up rate ≤ 20 users/second to avoid connection-reset storms. Watch Kafka consumer lag — if it grows unboundedly, the pipeline is saturating.
 
-See `load_tests/README.md` for the complete guide including multi-worker distributed testing.
+See `load_tests/README.md` for the full guide (Docker Compose, `make loadtest-*`, and environment variables).
 
 ---
 
 ## Contributing
 
-### TDD Workflow
+### Tests
 
-This project was implemented following strict TDD (Red → Green → Refactor). Please maintain this standard:
+1. Add or extend `_test.go` files next to the code under `go-api/`.
+2. Run `go test ./...` from `go-api/` until green.
+3. Refactor while keeping tests passing.
 
-1. Before adding a feature, write the test in `tests/test_group_<N>_<theme>.py`.
-2. Run `pytest tests/test_group_X.py -v` and watch it fail.
-3. Implement the minimum to pass.
-4. Refactor while keeping green.
+### Code standards (Go)
 
-### Code Standards
+- Prefer small, focused packages under `go-api/internal/`.
+- Use `context.Context` for cancellation on I/O paths.
+- Run `go fmt` / `golangci-lint` if configured in your environment.
 
-- **Type hints required** in public signatures.
-- **Async-first**: all IO-bound operations use `async/await`.
-- **No obvious comments** — comment only non-trivial decisions.
-- **Pydantic** for schemas (request/response).
-- **SQLAlchemy 2.0 style** (`select(...)`, async session).
-
-### Before Opening a PR
+### Before opening a PR
 
 ```bash
-pytest                         # 29/29 green
-cd docs && npm run build       # clean build
+cd go-api && go test ./...
+cd docs && npm run build
 ```
 
 ---
@@ -521,8 +505,8 @@ This project is provided "as is" for study and free use purposes. While it imple
 ## Resources
 
 - **Product Documentation:** <http://localhost:3001> (after `docker compose up -d docs`)
-- **Swagger UI:** <http://localhost:8000/docs>
+- **API health:** <http://localhost:8000/health>
 
 ---
 
-**Built with ❤️ using FastAPI, Kafka, Redis, and PostgreSQL**
+**Built with Go, Kafka, Redis, and PostgreSQL**

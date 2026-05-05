@@ -52,7 +52,7 @@ func VerifyHMACSignature(secretRaw string, body []byte, signature string) bool {
 	return hmac.Equal([]byte(sig), []byte(expected))
 }
 
-// wsPayload is the signed token payload — matches Python's ws_token.py exactly.
+// wsPayload is the signed WebSocket token payload.
 type wsPayload struct {
 	Sub string `json:"sub"`
 	Exp int64  `json:"exp"`
@@ -74,13 +74,13 @@ func signBody(body, appSecretKey string) string {
 
 // CreateSignedToken creates a signed WebSocket token.
 // Format: base64url(json_payload).base64url(hmac_sha256)
-// Replicates ws_token.py create_signed_token exactly.
+// CreateSignedToken builds body.signature HMAC token for WebSocket auth.
 func CreateSignedToken(tenantID uuid.UUID, ttlSeconds int, appSecretKey string) string {
 	payload := wsPayload{
 		Sub: tenantID.String(),
 		Exp: time.Now().Unix() + int64(ttlSeconds),
 	}
-	// json.Marshal produces compact JSON (no spaces) — matches Python's separators=(",",":")
+	// json.Marshal produces compact JSON (no spaces between fields).
 	jsonBytes, _ := json.Marshal(payload)
 	body := b64Encode(jsonBytes)
 	sig := signBody(body, appSecretKey)

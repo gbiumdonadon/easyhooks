@@ -10,7 +10,7 @@ import (
 )
 
 // NewConsumer creates a franz-go Kafka consumer for the webhook worker.
-// Consumer group with manual commit and earliest reset — matches Python's AIOKafkaConsumer.
+// Consumer group with manual commit and earliest offset reset.
 func NewConsumer(cfg *config.Config) (*kgo.Client, error) {
 	brokers := strings.Split(cfg.KafkaBootstrapServers, ",")
 	client, err := kgo.NewClient(

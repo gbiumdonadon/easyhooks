@@ -60,14 +60,14 @@ func acquireIdempotencyLock(ctx context.Context, rdb *goredis.Client, cfg *confi
 }
 
 // backoffDuration returns exponential backoff for a given attempt (1-based).
-// Matches Python: base_ms * 2^(attempt-1)
+// Exponential backoff: base_ms * 2^(attempt-1)
 func backoffDuration(cfg *config.Config, attempt int) time.Duration {
 	ms := float64(cfg.WorkerBackoffBaseMs) * math.Pow(2, float64(attempt-1))
 	return time.Duration(ms) * time.Millisecond
 }
 
 // ProcessRecord applies idempotency check, business handler with retry/backoff, and DLQ routing.
-// Mirrors Python's process_record in webhook_processor.py.
+// Kafka consumer record processing pipeline.
 func ProcessRecord(ctx context.Context, record *kgo.Record, rdb *goredis.Client, dlqClient *kgo.Client, cfg *config.Config, handler BusinessHandler) error {
 	tracer := observability.Tracer("easyhooks.worker")
 

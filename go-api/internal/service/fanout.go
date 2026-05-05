@@ -13,7 +13,7 @@ import (
 
 // TenantFanout manages fan-out of Redis Stream events to multiple WebSocket subscribers.
 // A single XREAD loop feeds all subscriber channels, reducing Redis connections under load.
-// Mirrors Python's TenantFanout in ws_fanout.py.
+// TenantFanout delivers Redis pub/sub messages to WebSocket subscribers.
 type TenantFanout struct {
 	rdb      *goredis.Client
 	cfg      *config.Config
@@ -70,7 +70,7 @@ func (f *TenantFanout) Subscribe() (<-chan StreamEvent, func()) {
 }
 
 // readerLoop reads from Redis Stream and fans out to all subscriber channels.
-// Drop-on-full behaviour mirrors Python's QueueFull handling.
+// Drop-on-full: disconnect slow subscribers when their buffer is full.
 func (f *TenantFanout) readerLoop(ctx context.Context) {
 	events := StreamTenantEvents(ctx, f.rdb, f.cfg, f.tenantID, "$")
 	for {
@@ -95,7 +95,7 @@ func (f *TenantFanout) fanOut(event StreamEvent) {
 		select {
 		case ch <- event:
 		default:
-			// Subscriber queue full — disconnect it (same as Python's QueueFull)
+			// Subscriber queue full — disconnect it
 			slog.Warn("Subscriber queue full, dropping", "tenant_id", f.tenantID, "sub_id", id)
 			dead = append(dead, id)
 		}
@@ -117,7 +117,7 @@ func (f *TenantFanout) fanOut(event StreamEvent) {
 }
 
 // FanoutManager maintains one TenantFanout per active tenant.
-// Mirrors Python's FanoutManager singleton in ws_fanout.py.
+// FanoutManager holds per-tenant fan-out goroutines.
 type FanoutManager struct {
 	mu      sync.Mutex
 	fanouts map[uuid.UUID]*TenantFanout

@@ -11,7 +11,7 @@ import (
 	"github.com/easyhooks/easyhooks/internal/config"
 )
 
-// NewProducer creates a franz-go Kafka producer with settings matching Python's aiokafka config.
+// NewProducer creates a franz-go Kafka producer for webhook ingestion.
 // linger=5ms, gzip compression, acks=leader (1), max batch=32KB.
 func NewProducer(cfg *config.Config) (*kgo.Client, error) {
 	brokers := strings.Split(cfg.KafkaBootstrapServers, ",")
@@ -21,6 +21,7 @@ func NewProducer(cfg *config.Config) (*kgo.Client, error) {
 		kgo.ProducerLinger(5*time.Millisecond),
 		kgo.ProducerBatchMaxBytes(32*1024),
 		kgo.RequiredAcks(kgo.LeaderAck()),
+		kgo.DisableIdempotentWrite(), // LeaderAck is incompatible with idempotent producer (needs acks=all)
 		kgo.RecordPartitioner(kgo.RoundRobinPartitioner()),
 	)
 	if err != nil {
@@ -35,6 +36,7 @@ func NewDLQProducer(cfg *config.Config) (*kgo.Client, error) {
 	client, err := kgo.NewClient(
 		kgo.SeedBrokers(brokers...),
 		kgo.RequiredAcks(kgo.LeaderAck()),
+		kgo.DisableIdempotentWrite(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create dlq producer: %w", err)
@@ -43,7 +45,7 @@ func NewDLQProducer(cfg *config.Config) (*kgo.Client, error) {
 }
 
 // ProduceWebhookMessage sends a webhook event to the inbound Kafka topic.
-// Headers: tenant_id, event_id — matches Python's kafka_producer.py.
+// Message headers include tenant_id and event_id for downstream tracing.
 func ProduceWebhookMessage(ctx context.Context, client *kgo.Client, topic, tenantID, eventID string, payload []byte) error {
 	record := &kgo.Record{
 		Topic: topic,

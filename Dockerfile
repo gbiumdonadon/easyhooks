@@ -11,7 +11,8 @@ WORKDIR /build
 
 ENV CGO_ENABLED=0 \
     GOOS=linux \
-    GOARCH=amd64
+    GOARCH=amd64 \
+    GOTOOLCHAIN=auto
 
 # Download dependencies first (cached layer)
 COPY go-api/go.mod go-api/go.sum ./

@@ -14,7 +14,7 @@ Plataforma multi-tenant de **ingestão, processamento idempotente e distribuiç�
 
 ```mermaid
 flowchart LR
-    Admin[Admin] -->|"POST /admin/tenants"| API[FastAPI]
+    Admin[Admin] -->|"POST /admin/tenants"| API[Go API Chi]
     API -->|"tenant_id + secret"| Admin
     Cliente[Cliente] -->|"POST /v1/webhooks/:id<br/>+ HMAC"| API
     API -->|"webhooks.inbound"| Kafka[(Kafka)]
@@ -30,7 +30,7 @@ flowchart LR
 
 ## Componentes
 
-- **API (`app`)** — FastAPI; expõe Admin API, ingestor, emissor de tokens WS e endpoint WebSocket.
+- **API (`app`)** — Go/Chi; expõe Admin API, ingestor, emissor de tokens WS e endpoint WebSocket.
 - **Worker** — Consumidor Kafka dedicado; aplica idempotência (Redis), retry exponencial, DLQ e publicação no Pub/Sub.
 - **Postgres** — Persistência de tenants e admins.
 - **Redis** — Cache de credenciais (`tenant_auth:{id}`, `tenant_hmac_key:{id}`), locks de idempotência (`event_lock:{event_id}`) e canais Pub/Sub (`tenant_events:{id}`).
@@ -55,11 +55,11 @@ flowchart LR
 
 ## Stack
 
-- **Linguagem:** Python 3.12
-- **Framework:** FastAPI + Uvicorn
-- **ORM:** SQLAlchemy (asyncio)
-- **Mensageria:** Apache Kafka (`aiokafka`)
-- **Cache / Pub-Sub:** Redis 7+
+- **Linguagem:** Go 1.24
+- **Framework:** Chi (`go-chi/chi`) + `net/http`
+- **Driver / migrações:** `pgx/v5` + `golang-migrate`
+- **Mensageria:** Apache Kafka (`twmb/franz-go`)
+- **Cache / Pub-Sub:** Redis 7+ (`go-redis/v9`)
 - **Banco:** PostgreSQL 16+
-- **Testes:** `pytest`, `pytest-asyncio`, `httpx`, `httpx-ws`, `testcontainers[kafka]`
+- **Testes:** `testing` + `testify` + `miniredis` (`go test ./...` em `go-api/`)
 - **Infra:** Docker Compose
