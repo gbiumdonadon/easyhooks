@@ -35,6 +35,8 @@ services:
       - "60 1000"
     volumes:
       - redis-data:/data
+    mem_limit: ${EASYHOOKS_MEM_LIMIT:-100m}
+    memswap_limit: ${EASYHOOKS_MEM_LIMIT:-100m}
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -57,8 +59,8 @@ services:
       DLQ_STREAM_KEY: ${DLQ_STREAM_KEY:-events:failed}
       CONSUMER_GROUP: ${CONSUMER_GROUP:-webhook-workers}
       EASYHOOKS_PROFILE: ${EASYHOOKS_PROFILE:-small}
-    mem_limit: ${EASYHOOKS_MEM_LIMIT:-256m}
-    memswap_limit: ${EASYHOOKS_MEM_LIMIT:-256m}
+    mem_limit: ${EASYHOOKS_MEM_LIMIT:-30m}
+    memswap_limit: ${EASYHOOKS_MEM_LIMIT:-30m}
     depends_on:
       redis:
         condition: service_healthy
@@ -78,8 +80,8 @@ services:
       DLQ_STREAM_KEY: ${DLQ_STREAM_KEY:-events:failed}
       CONSUMER_GROUP: ${CONSUMER_GROUP:-webhook-workers}
       EASYHOOKS_PROFILE: ${EASYHOOKS_PROFILE:-small}
-    mem_limit: ${EASYHOOKS_MEM_LIMIT:-256m}
-    memswap_limit: ${EASYHOOKS_MEM_LIMIT:-256m}
+    mem_limit: ${EASYHOOKS_MEM_LIMIT:-30m}
+    memswap_limit: ${EASYHOOKS_MEM_LIMIT:-30m}
     depends_on:
       redis:
         condition: service_healthy
@@ -92,6 +94,8 @@ services:
       dockerfile: Dockerfile
     ports:
       - "3001:80"
+    mem_limit: ${EASYHOOKS_MEM_LIMIT:-256m}
+    memswap_limit: ${EASYHOOKS_MEM_LIMIT:-256m}
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "wget --quiet --spider http://localhost/ || exit 1"]
