@@ -79,7 +79,7 @@ Rode na sua infra para ter números calibrados para sua CPU, rede e disco do Red
 Três métricas Prometheus permitem acompanhar o load shedding ao vivo:
 
 - `webhook_load_shed_total{tenant_id}` — counter de requisições rejeitadas com 429.
-- `ingest_queue_depth{stream}` — `XLEN(events:in)` atual amostrado a cada `QUEUE_DEPTH_POLL_MS`.
+- `ingest_queue_depth{stream}` — backlog atual do consumer group (`lag + pending`) de `events:in`, amostrado via `XINFO GROUPS` a cada `QUEUE_DEPTH_POLL_MS`. É o trabalho não processado de fato — não o `XLEN` — então volta a zero sempre que o worker está em dia.
 - `ingest_load_shedding_active` — gauge 0/1 refletindo o estado da histerese. Alerte em `== 1 for 1m` para ser paginado quando a fila está realmente saturada, não em blips transitórios.
 
 Para a camada WebSocket:

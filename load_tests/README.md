@@ -44,8 +44,8 @@ k6 run k6/scenarios/baseline.js
 | `k6/scenarios/throughput.js` | `constant-arrival-rate` (tune `K6_TARGET_RPS`, `K6_DURATION`) |
 | `k6/scenarios/websocket_scale.js` | Many WS connections (`K6_WS_VUS`, `K6_DURATION`) |
 | `k6/scenarios/multi_tenant.js` | Spread load across the pool |
-| `k6/scenarios/stress.js` | Aggressive ramp |
 | `k6/scenarios/custom_scenario.js` | Env-tunable (`K6_CUSTOM_TARGET`, `K6_CUSTOM_SLEEP`) |
+| `k6/scenarios/combined_baseline_ws.js` | Publisher HTTP + consumidores WS no mesmo run, mede latência fim-a-fim de entrega via `ws_event_latency_ms` (`K6_WS_VUS`, `K6_PUB_VUS`, `K6_WS_WARMUP`, `K6_PUB_DURATION`, `K6_TOTAL_DURATION`) |
 
 ## Environment variables
 

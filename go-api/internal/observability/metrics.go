@@ -158,7 +158,7 @@ var (
 	IngestQueueDepth = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "ingest_queue_depth",
-			Help: "Last observed length of the ingestion stream (XLEN), polled by the queue-depth monitor",
+			Help: "Last observed consumer-group backlog (lag + pending) for the ingestion stream, polled via XINFO GROUPS by the queue-depth monitor",
 		},
 		[]string{"stream"},
 	)
@@ -166,7 +166,7 @@ var (
 	IngestLoadSheddingActive = promauto.NewGauge(
 		prometheus.GaugeOpts{
 			Name: "ingest_load_shedding_active",
-			Help: "1 when the ingestion is currently shedding load (queue depth crossed the high watermark), 0 otherwise",
+			Help: "1 when the ingestion is currently shedding load (consumer-group backlog crossed the high watermark), 0 otherwise",
 		},
 	)
 

@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	chiMiddleware "github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/easyhooks/easyhooks/internal/config"
 	"github.com/easyhooks/easyhooks/internal/handler"
@@ -68,15 +69,24 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Defensive one-shot trim at boot to enforce the configured memory cap on
+	// streams that may have grown unbounded in older deployments. The load
+	// shedder no longer depends on this (it reads consumer-group backlog,
+	// not XLEN), so the trim is purely a memory guard-rail.
+	bootTrimStream(ctx, rdb, cfg.EventStreamKey, int64(cfg.IngestStreamMaxLen))
+	bootTrimStream(ctx, rdb, cfg.DLQStreamKey, int64(cfg.DLQStreamMaxLen))
+
 	// Per-tenant fan-out manager (used by the WebSocket handler).
 	fanoutMgr := service.NewFanoutManager()
 
-	// Queue depth monitor: samples XLEN every cfg.QueueDepthPollMs so that
-	// IngestWebhook can shed load (HTTP 429) without doing a Redis round-trip
-	// per request. Hysteresis between high/low watermarks prevents flapping.
+	// Queue depth monitor: samples consumer-group backlog (lag + pending) every
+	// cfg.QueueDepthPollMs so that IngestWebhook can shed load (HTTP 429)
+	// without doing a Redis round-trip per request. Hysteresis between
+	// high/low watermarks prevents flapping.
 	queueMonitor := streams.NewQueueDepthMonitor(
 		rdb,
 		cfg.EventStreamKey,
+		cfg.ConsumerGroup,
 		int64(cfg.IngestMaxQueueDepth),
 		cfg.QueueDepthLowWaterPct,
 	)
@@ -141,6 +151,27 @@ func main() {
 		slog.Error("Graceful shutdown failed", "error", err)
 	}
 	slog.Info("API server stopped")
+}
+
+// bootTrimStream runs the defensive XTRIM described in main(). Failures are
+// logged but never block startup: the trim is a recovery aid, not a critical
+// dependency, and the API can still serve traffic with an oversized stream.
+func bootTrimStream(ctx context.Context, rdb *goredis.Client, stream string, maxLen int64) {
+	if maxLen <= 0 {
+		return
+	}
+	trimmed, err := streams.TrimMaxLenApprox(ctx, rdb, stream, maxLen)
+	if err != nil {
+		slog.Warn("Boot-time stream trim failed (continuing)",
+			"stream", stream, "max_len", maxLen, "error", err,
+		)
+		return
+	}
+	if trimmed > 0 {
+		slog.Info("Boot-time stream trim removed legacy entries",
+			"stream", stream, "max_len", maxLen, "trimmed", trimmed,
+		)
+	}
 }
 
 // applyMemoryLimit wires GOMEMLIMIT (Go 1.19+) so the GC works harder before

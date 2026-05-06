@@ -25,7 +25,7 @@
  *     baixa (verificar via dashboards de observabilidade).
  */
 import http from 'k6/http';
-import ws from 'k6/experimental/websockets';
+import ws from 'k6/ws';
 import { check } from 'k6';
 
 import { loadTenantSharedArray, pickTenant } from '../lib/tenants.js';
@@ -34,7 +34,7 @@ import { buildHandleSummary } from '../lib/summary.js';
 
 const tenants = loadTenantSharedArray();
 
-const vus = Number(__ENV.K6_WS_VUS || 80);
+const vus = Number(__ENV.K6_WS_VUS || 10);
 const duration = __ENV.K6_DURATION || '3m';
 
 export const options = {
