@@ -34,8 +34,8 @@ import { buildHandleSummary } from '../lib/summary.js';
 
 const tenants = loadTenantSharedArray();
 
-const vus = Number(__ENV.K6_WS_VUS || 10);
-const duration = __ENV.K6_DURATION || '3m';
+const vus = Number(__ENV.K6_WS_VUS || 50);
+const duration = __ENV.K6_DURATION || '30m';
 
 export const options = {
   vus,

@@ -46,7 +46,7 @@ const tenants = loadTenantSharedArray();
 const wsVUs = Number(__ENV.K6_WS_VUS || 10);
 const pubVUs = Number(__ENV.K6_PUB_VUS || 10);
 const wsWarmup = __ENV.K6_WS_WARMUP || '15s';
-const pubDuration = __ENV.K6_PUB_DURATION || '2m';
+const pubDuration = __ENV.K6_PUB_DURATION || '8h';
 const totalDuration = __ENV.K6_TOTAL_DURATION || '2m45s';
 const wsLifetimeMs = Number(__ENV.K6_WS_LIFETIME_MS || 160000);
 
