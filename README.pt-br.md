@@ -239,9 +239,11 @@ Todas configuráveis via `.env` na raiz. Copie `.env.example` → `.env`.
 | `STREAM_MAX_LEN` | XADD MAXLEN ~ por stream de tenant (definido pelo perfil) | small=1000, medium=5000, large=10000 |
 | `STREAM_HISTORY_COUNT` | Histórico no connect WS | `50` |
 | `WS_FANOUT_BUFFER_SIZE` | Buffer do canal por subscriber WS (definido pelo perfil) | small=100, medium=256, large=512 |
-| `INGEST_MAX_QUEUE_DEPTH` | High watermark de `XLEN events:in` — acima dele a API responde 429 (definido pelo perfil) | small=5000, medium=25000, large=50000 |
-| `QUEUE_DEPTH_POLL_MS` | Frequência com que a API amostra `XLEN` para o load shedder | `1000` |
-| `QUEUE_DEPTH_LOW_WATER_PCT` | Histerese: libera o shedding quando depth cai a `high * pct / 100` | `80` |
+| `INGEST_MAX_QUEUE_DEPTH` | High watermark do backlog do consumer group (`lag + pending`) de `events:in` — acima dele a API responde 429 (definido pelo perfil) | small=5000, medium=25000, large=50000 |
+| `INGEST_STREAM_MAX_LEN` | Teto físico do `events:in` via `XADD ... MAXLEN ~ N`. Apenas guarda-corpo de memória (desacoplado do load shedder, que lê o backlog do consumer group, não `XLEN`). | `2 * INGEST_MAX_QUEUE_DEPTH` |
+| `DLQ_STREAM_MAX_LEN` | Teto físico do `events:failed` via `XADD ... MAXLEN ~ N`. O DLQ tem pressão menor que `events:in` mas continua sem limite por padrão; o cap preserva uma janela forense generosa sem crescimento indefinido. | `10000` |
+| `QUEUE_DEPTH_POLL_MS` | Frequência com que a API amostra o backlog do consumer group (`XINFO GROUPS`) para o load shedder | `1000` |
+| `QUEUE_DEPTH_LOW_WATER_PCT` | Histerese: libera o shedding quando o backlog cai a `high * pct / 100` | `80` |
 | `CORS_ORIGINS` | Origens CORS | `http://localhost:3001,http://localhost:3000` |
 | `SECRET_KEY_BYTES` | Entropia do secret de tenant | `32` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Endpoint OTLP (Jaeger) | `http://jaeger:4317` |
@@ -330,11 +332,14 @@ docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
 redis_stream_group_pending{stream="events:in",group="webhook-workers"}
 ```
 
-#### 2. Tamanho dos streams
+#### 2. Tamanho físico dos streams
+
+`redis_stream_length` é o `XLEN` físico exposto pelo redis-exporter — útil como sinal de memória, mas **não** é o queue depth visto pelo load shedder. Para o sinal real do shedder, use `ingest_queue_depth` (`lag + pending` do consumer group).
 
 ```promql
 redis_stream_length{stream="events:in"}
 redis_stream_length{stream="events:failed"}
+ingest_queue_depth{stream="events:in"}
 ```
 
 #### 3. Taxa de DLQ

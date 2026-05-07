@@ -27,6 +27,8 @@ func TestLoad_DefaultsToSmallProfile(t *testing.T) {
 	assert.Equal(t, expected.RedisPoolSize, cfg.RedisPoolSize)
 	assert.Equal(t, expected.WSFanoutBufferSize, cfg.WSFanoutBufferSize)
 	assert.Equal(t, expected.IngestMaxQueueDepth, cfg.IngestMaxQueueDepth)
+	assert.Equal(t, expected.IngestMaxQueueDepth*2, cfg.IngestStreamMaxLen,
+		"IngestStreamMaxLen should default to 2x IngestMaxQueueDepth")
 }
 
 func TestLoad_MediumProfileAppliesTier(t *testing.T) {
@@ -112,4 +114,38 @@ func TestLoad_InvalidLowWaterPctFails(t *testing.T) {
 	_, err := Load()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "QUEUE_DEPTH_LOW_WATER_PCT")
+}
+
+func TestLoad_IngestStreamMaxLenExplicitOverride(t *testing.T) {
+	setRequiredSecrets(t)
+	t.Setenv("INGEST_STREAM_MAX_LEN", "12345")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	assert.Equal(t, 12345, cfg.IngestStreamMaxLen,
+		"explicit INGEST_STREAM_MAX_LEN should win over the 2x default")
+}
+
+func TestLoad_IngestStreamMaxLenBelowQueueDepthIsAllowed(t *testing.T) {
+	setRequiredSecrets(t)
+	// The load shedder no longer reads XLEN, so INGEST_STREAM_MAX_LEN is
+	// purely a memory guard-rail — it can sit below INGEST_MAX_QUEUE_DEPTH
+	// without breaking the shedder. The ratio is just a sizing decision.
+	t.Setenv("INGEST_STREAM_MAX_LEN", "100")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	assert.Equal(t, 100, cfg.IngestStreamMaxLen)
+	assert.Equal(t, profilesTable[ProfileSmall].IngestMaxQueueDepth, cfg.IngestMaxQueueDepth)
+}
+
+func TestLoad_CustomProfileDerivesIngestStreamMaxLen(t *testing.T) {
+	setRequiredSecrets(t)
+	t.Setenv("EASYHOOKS_PROFILE", "custom")
+	t.Setenv("INGEST_MAX_QUEUE_DEPTH", "1000")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	assert.Equal(t, 2000, cfg.IngestStreamMaxLen,
+		"custom profile should still derive IngestStreamMaxLen as 2x IngestMaxQueueDepth when unset")
 }

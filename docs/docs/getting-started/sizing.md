@@ -78,7 +78,7 @@ Run it on your own infrastructure to get numbers calibrated for your CPU, networ
 Three Prometheus metrics let you track the load-shedding behaviour live:
 
 - `webhook_load_shed_total{tenant_id}` — counter of 429-rejected requests.
-- `ingest_queue_depth{stream}` — current `XLEN(events:in)` sampled every `QUEUE_DEPTH_POLL_MS`.
+- `ingest_queue_depth{stream}` — current consumer-group backlog (`lag + pending`) of `events:in`, sampled via `XINFO GROUPS` every `QUEUE_DEPTH_POLL_MS`. This is the actual unprocessed work — not `XLEN` — so it goes back to zero whenever the worker is in sync.
 - `ingest_load_shedding_active` — 0/1 gauge reflecting the hysteresis state. Alert on `== 1 for 1m` to be paged when the queue is actually saturated, not on transient blips.
 
 For the WebSocket layer:

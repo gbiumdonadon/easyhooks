@@ -55,7 +55,7 @@ func IngestWebhook(rdb *goredis.Client, cfg *config.Config, shedder LoadShedder)
 			return
 		}
 
-		if _, err := streams.Publish(r.Context(), rdb, cfg.EventStreamKey, tenant.TenantID.String(), eventID, body); err != nil {
+		if _, err := streams.Publish(r.Context(), rdb, cfg.EventStreamKey, tenant.TenantID.String(), eventID, body, int64(cfg.IngestStreamMaxLen)); err != nil {
 			slog.Error("Failed to publish webhook to stream",
 				"tenant_id", tenant.TenantID, "event_id", eventID, "error", err,
 			)

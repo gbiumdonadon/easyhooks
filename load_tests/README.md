@@ -44,8 +44,9 @@ k6 run k6/scenarios/baseline.js
 | `k6/scenarios/throughput.js` | `constant-arrival-rate` (tune `K6_TARGET_RPS`, `K6_DURATION`) |
 | `k6/scenarios/websocket_scale.js` | Many WS connections (`K6_WS_VUS`, `K6_DURATION`) |
 | `k6/scenarios/multi_tenant.js` | Spread load across the pool |
-| `k6/scenarios/stress.js` | Aggressive ramp |
 | `k6/scenarios/custom_scenario.js` | Env-tunable (`K6_CUSTOM_TARGET`, `K6_CUSTOM_SLEEP`) |
+| `k6/scenarios/combined_baseline_ws.js` | Publisher HTTP + consumidores WS no mesmo run, mede latência fim-a-fim de entrega via `ws_event_latency_ms` (`K6_WS_VUS`, `K6_PUB_VUS`, `K6_WS_WARMUP`, `K6_PUB_DURATION`, `K6_TOTAL_DURATION`) |
+| `k6/scenarios/failure_tracking.js` | Injeta uma fração configurável (`LOADTEST_FAILURE_RATIO`, default 10%) de requisições inválidas (HMAC errada, sem `X-Event-Id`, tenant inexistente) e grava cada falha observada no stream Redis `loadtest:dlq` para análise posterior. Veja [Investigando falhas](#investigando-falhas-loadtestdlq) |
 
 ## Environment variables
 
@@ -56,6 +57,43 @@ k6 run k6/scenarios/baseline.js
 | `LOADTEST_TENANT_COUNT` | Tenants to create (default `50`) |
 | `LOADTEST_TENANT_PREFIX` | Name prefix (default `loadtest`) |
 | `TENANT_POOL_FILE` | Path to JSON pool (Docker: `/load_tests/.tenant_pool.json`) |
+| `LOADTEST_REDIS_URL` | Redis a partir do container k6 (default `redis://redis:6379/0`). Usado por `failure_tracking.js`. |
+| `LOADTEST_DLQ_STREAM` | Stream onde o k6 grava falhas (default `loadtest:dlq`). |
+| `LOADTEST_DLQ_MAX_LEN` | Cap aproximado do stream `loadtest:dlq` (`MAXLEN ~`, default `50000`). |
+| `LOADTEST_FAILURE_RATIO` | Fração de requisições intencionalmente inválidas no `failure_tracking.js` (default `0.10`). |
+| `LOADTEST_WORKER_DLQ_STREAM` | DLQ do worker observada (default `events:failed`). XLEN é amostrado em setup/teardown. |
+
+## Investigando falhas (`loadtest:dlq`)
+
+O cenário `failure_tracking.js` mantém um *load-test DLQ* dedicado em
+`loadtest:dlq` (separado da DLQ do worker `events:failed`). Toda resposta
+não-202, timeout ou erro de transporte vira uma entrada no stream com:
+
+`scenario`, `kind` (`bad_signature` | `missing_event_id` | `unknown_tenant` |
+`valid` | …), `injected` (`true`/`false`), `tenant_id`, `event_id`, `status`,
+`error`, `error_code`, `classification`, `latency_ms`, `body_excerpt`, `vu`,
+`iter`, `ts`.
+
+Inspecione depois do run com:
+
+```bash
+docker compose exec redis redis-cli XLEN loadtest:dlq
+docker compose exec redis redis-cli XREVRANGE loadtest:dlq + - COUNT 20
+docker compose exec redis redis-cli XINFO STREAM loadtest:dlq
+# DLQ "real" do worker (eventos que esgotaram retries)
+docker compose exec redis redis-cli XLEN events:failed
+docker compose exec redis redis-cli XREVRANGE events:failed + - COUNT 20
+```
+
+Para limpar o stream entre runs:
+
+```bash
+docker compose exec redis redis-cli DEL loadtest:dlq
+```
+
+O stream é capado em `LOADTEST_DLQ_MAX_LEN` (default `50000`) via
+`XADD ... MAXLEN ~ N`, mesmo padrão usado em
+[`go-api/internal/streams/queue.go`](../go-api/internal/streams/queue.go).
 
 ## What to watch while running
 

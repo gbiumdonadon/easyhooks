@@ -8,8 +8,7 @@
    automatically):
 
 ```bash
-docker compose -f load_tests/docker-compose.loadtest.yml run --rm k6 \
-  run k6/scenarios/baseline.js
+docker compose -f load_tests/docker-compose.loadtest.yml run --rm k6 run k6/scenarios/baseline.js
 ```
 
 Or, if you have k6 installed locally:
@@ -29,5 +28,30 @@ docker compose exec redis redis-cli XLEN events:in
 docker compose exec redis redis-cli XPENDING events:in webhook-workers
 docker compose exec redis redis-cli XLEN events:failed
 ```
+
+## Rastreando falhas (`failure_tracking.js`)
+
+Para investigar respostas não-202, timeouts e erros de conexão, rode o
+cenário dedicado — ele injeta ~10% de requisições inválidas e grava cada
+falha num stream Redis (`loadtest:dlq`):
+
+```bash
+docker compose -f load_tests/docker-compose.loadtest.yml run --rm k6 \
+  run k6/scenarios/failure_tracking.js
+```
+
+Após o run, inspecione as entradas:
+
+```bash
+docker compose exec redis redis-cli XLEN loadtest:dlq
+docker compose exec redis redis-cli XREVRANGE loadtest:dlq + - COUNT 20
+# DLQ do worker (eventos que esgotaram retries — raramente cresce só por 4xx)
+docker compose exec redis redis-cli XLEN events:failed
+```
+
+Tunable via env: `LOADTEST_FAILURE_RATIO` (default `0.10`),
+`LOADTEST_DLQ_STREAM` (default `loadtest:dlq`),
+`LOADTEST_DLQ_MAX_LEN` (default `50000`). Detalhes em
+[README.md](./README.md#investigando-falhas-loadtestdlq).
 
 See [README.md](./README.md) for all scenarios and tuning variables.

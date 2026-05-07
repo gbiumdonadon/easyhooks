@@ -5,7 +5,7 @@
 # Usage:
 #   ./run-loadtest.sh [scenario] [--tenant-count N] [--api-url URL] [--help]
 #
-# Scenarios: baseline, throughput, websocket_scale, multi_tenant, stress, custom_scenario
+# Scenarios: baseline, throughput, websocket_scale, multi_tenant, stress, custom_scenario, combined_baseline_ws
 #
 # Examples:
 #   ./run-loadtest.sh baseline
@@ -49,7 +49,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$SCENARIO" in
-  baseline|throughput|websocket_scale|multi_tenant|stress|custom_scenario)
+  baseline|throughput|websocket_scale|multi_tenant|stress|custom_scenario|combined_baseline_ws)
     K6_SCRIPT="k6/scenarios/${SCENARIO}.js"
     ;;
   *)

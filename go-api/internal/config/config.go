@@ -47,11 +47,12 @@ type Config struct {
 	AuthSessionTTL int    `env:"AUTH_SESSION_TTL_SECONDS" envDefault:"300"`
 
 	// --- Event work-queue (Redis Streams) ---
-	EventStreamKey string `env:"EVENT_STREAM_KEY" envDefault:"events:in"`
-	DLQStreamKey   string `env:"DLQ_STREAM_KEY" envDefault:"events:failed"`
-	ConsumerGroup  string `env:"CONSUMER_GROUP" envDefault:"webhook-workers"`
-	StreamBlockMs  int    `env:"STREAM_BLOCK_MS" envDefault:"5000"`
-	StreamCount    int64  `env:"STREAM_COUNT" envDefault:"32"`
+	EventStreamKey  string `env:"EVENT_STREAM_KEY" envDefault:"events:in"`
+	DLQStreamKey    string `env:"DLQ_STREAM_KEY" envDefault:"events:failed"`
+	DLQStreamMaxLen int    `env:"DLQ_STREAM_MAX_LEN" envDefault:"10000"`
+	ConsumerGroup   string `env:"CONSUMER_GROUP" envDefault:"webhook-workers"`
+	StreamBlockMs   int    `env:"STREAM_BLOCK_MS" envDefault:"5000"`
+	StreamCount     int64  `env:"STREAM_COUNT" envDefault:"32"`
 
 	// --- Worker retry / idempotency ---
 	WorkerMaxRetries    int `env:"WORKER_MAX_RETRIES" envDefault:"3"`
@@ -69,8 +70,18 @@ type Config struct {
 	// GoMemLimitBytes is always derived from the profile; users override it via
 	// the native GOMEMLIMIT env var (handled by the Go runtime, see
 	// runtime/debug.SetMemoryLimit).
+	//
+	// IngestMaxQueueDepth is the high watermark on the consumer-group backlog
+	// (lag + pending) of the ingestion stream, NOT on XLEN. Above it the API
+	// rejects POST /v1/webhooks/* with 429 + Retry-After.
+	//
+	// IngestStreamMaxLen is purely a memory guard-rail on the physical size of
+	// the events:in stream (XADD MAXLEN ~ N). It is decoupled from the load
+	// shedder: backlog goes to zero whenever the worker keeps up, regardless
+	// of how much history Redis still holds in the stream.
 	GoMemLimitBytes       int64
 	IngestMaxQueueDepth   int `env:"INGEST_MAX_QUEUE_DEPTH"` // profile-driven
+	IngestStreamMaxLen    int `env:"INGEST_STREAM_MAX_LEN"`  // 0 → 2 * IngestMaxQueueDepth
 	QueueDepthPollMs      int `env:"QUEUE_DEPTH_POLL_MS" envDefault:"1000"`
 	QueueDepthLowWaterPct int `env:"QUEUE_DEPTH_LOW_WATER_PCT" envDefault:"80"`
 
@@ -158,6 +169,9 @@ func applyProfileDefaults(cfg *Config) error {
 		if cfg.IngestMaxQueueDepth == 0 {
 			cfg.IngestMaxQueueDepth = t.IngestMaxQueueDepth
 		}
+		if cfg.IngestStreamMaxLen == 0 {
+			cfg.IngestStreamMaxLen = cfg.IngestMaxQueueDepth * 2
+		}
 	case ProfileCustom:
 		// "custom" is opt-in for advanced operators: nothing is auto-filled,
 		// but we surface a warning if essential fields are missing so a typo
@@ -171,6 +185,13 @@ func applyProfileDefaults(cfg *Config) error {
 				"ws_fanout_buffer_size", cfg.WSFanoutBufferSize,
 				"ingest_max_queue_depth", cfg.IngestMaxQueueDepth,
 			)
+		}
+		// Even in custom mode we derive the physical stream cap from the load
+		// shedder threshold when the operator did not set it explicitly. This
+		// keeps INGEST_STREAM_MAX_LEN safe-by-default without forcing every
+		// custom deployment to think about it.
+		if cfg.IngestStreamMaxLen == 0 && cfg.IngestMaxQueueDepth > 0 {
+			cfg.IngestStreamMaxLen = cfg.IngestMaxQueueDepth * 2
 		}
 	default:
 		return fmt.Errorf("invalid EASYHOOKS_PROFILE %q (expected small, medium, large or custom)", cfg.Profile)

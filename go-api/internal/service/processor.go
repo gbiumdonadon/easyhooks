@@ -172,7 +172,7 @@ func dispatchToDLQ(ctx context.Context, rdb *goredis.Client, cfg *config.Config,
 	_, span := tracer.Start(ctx, "webhook.dispatch_to_dlq")
 	defer span.End()
 
-	if _, err := streams.PublishDLQ(ctx, rdb, cfg.DLQStreamKey, envelope.TenantID, envelope.EventID, envelope.Payload, origErr); err != nil {
+	if _, err := streams.PublishDLQ(ctx, rdb, cfg.DLQStreamKey, envelope.TenantID, envelope.EventID, envelope.Payload, origErr, int64(cfg.DLQStreamMaxLen)); err != nil {
 		return fmt.Errorf("publish to DLQ stream: %w", err)
 	}
 

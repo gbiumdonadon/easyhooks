@@ -29,6 +29,60 @@ function metricVal(data, name, key) {
   return m.values[key];
 }
 
+/**
+ * Coleta dados da DLQ (loadtest:dlq) e da DLQ do worker (events:failed) a
+ * partir das métricas customizadas emitidas por `lib/dlq.js`. Retorna `null`
+ * se nenhuma das métricas estiver presente — assim cenários que não usam DLQ
+ * não pagam nada nem mostram a seção.
+ */
+function collectDLQStats(data) {
+  if (!data || !data.metrics) return null;
+
+  const total = metricVal(data, 'loadtest_dlq_writes', 'count');
+  const errors = metricVal(data, 'loadtest_dlq_write_errors', 'count');
+  const before = metricVal(data, 'loadtest_worker_dlq_before', 'count');
+  const after = metricVal(data, 'loadtest_worker_dlq_after', 'count');
+
+  const seenAny =
+    total !== undefined ||
+    errors !== undefined ||
+    before !== undefined ||
+    after !== undefined ||
+    Object.keys(data.metrics).some(
+      (n) => n.startsWith('loadtest_dlq_writes{') || n.startsWith('loadtest_failures_by_kind{'),
+    );
+  if (!seenAny) return null;
+
+  const perKind = {};
+  for (const name of Object.keys(data.metrics)) {
+    const m1 = name.match(/^loadtest_dlq_writes\{kind:([^}]+)\}$/);
+    if (m1) {
+      const kind = m1[1];
+      const v = data.metrics[name].values && data.metrics[name].values.count;
+      perKind[kind] = perKind[kind] || { writes: 0, observed: 0 };
+      perKind[kind].writes = v || 0;
+      continue;
+    }
+    const m2 = name.match(/^loadtest_failures_by_kind\{kind:([^}]+)\}$/);
+    if (m2) {
+      const kind = m2[1];
+      const v = data.metrics[name].values && data.metrics[name].values.count;
+      perKind[kind] = perKind[kind] || { writes: 0, observed: 0 };
+      perKind[kind].observed = v || 0;
+    }
+  }
+
+  return {
+    total: total || 0,
+    errors: errors || 0,
+    workerBefore: before === undefined ? null : before,
+    workerAfter: after === undefined ? null : after,
+    workerDelta:
+      before === undefined || after === undefined ? null : (after || 0) - (before || 0),
+    perKind,
+  };
+}
+
 function buildTextSummary(scenarioName, data) {
   const reqs = metricVal(data, 'http_reqs', 'count') || 0;
   const rps = metricVal(data, 'http_reqs', 'rate') || 0;
@@ -63,6 +117,29 @@ function buildTextSummary(scenarioName, data) {
   lines.push(`  Latência máx       : ${fmt(max, 2)} ms`);
   lines.push(`  Dados enviados     : ${fmt(dataSent / 1024, 2)} KB`);
   lines.push(`  Dados recebidos    : ${fmt(dataRecv / 1024, 2)} KB`);
+
+  const dlq = collectDLQStats(data);
+  if (dlq) {
+    lines.push('  DLQ (loadtest:dlq):');
+    lines.push(`    - Falhas gravadas    : ${fmt(dlq.total, 0)}`);
+    lines.push(`    - Erros de XADD      : ${fmt(dlq.errors, 0)}`);
+    if (dlq.workerBefore !== null && dlq.workerAfter !== null) {
+      lines.push(
+        `    - Worker DLQ (events:failed) XLEN : ${fmt(dlq.workerBefore, 0)} -> ${fmt(
+          dlq.workerAfter,
+          0,
+        )} (delta ${fmt(dlq.workerDelta, 0)})`,
+      );
+    }
+    const kinds = Object.keys(dlq.perKind).sort();
+    if (kinds.length > 0) {
+      lines.push('    - Por tipo (observado / gravado):');
+      for (const k of kinds) {
+        const v = dlq.perKind[k];
+        lines.push(`        ${k.padEnd(20)} ${fmt(v.observed, 0)} / ${fmt(v.writes, 0)}`);
+      }
+    }
+  }
 
   const thresholds = [];
   if (data && data.metrics) {
@@ -112,6 +189,50 @@ function buildHtmlSummary(scenarioName, data) {
     }
   }
 
+  const dlq = collectDLQStats(data);
+  let dlqSection = '';
+  if (dlq) {
+    const kinds = Object.keys(dlq.perKind).sort();
+    const kindRows =
+      kinds.length === 0
+        ? '<tr><td colspan="3">Nenhum tipo de falha observado.</td></tr>'
+        : kinds
+            .map(
+              (k) =>
+                `<tr><td>${k}</td><td>${fmt(dlq.perKind[k].observed, 0)}</td><td>${fmt(
+                  dlq.perKind[k].writes,
+                  0,
+                )}</td></tr>`,
+            )
+            .join('\n        ');
+    const workerLine =
+      dlq.workerBefore !== null && dlq.workerAfter !== null
+        ? `<div class="card"><div class="label">Worker DLQ delta</div><div class="value">${fmt(
+            dlq.workerBefore,
+            0,
+          )} &rarr; ${fmt(dlq.workerAfter, 0)} (&Delta; ${fmt(dlq.workerDelta, 0)})</div></div>`
+        : '';
+    dlqSection = `
+  <h2>DLQ (loadtest:dlq)</h2>
+  <div class="grid">
+    <div class="card"><div class="label">Falhas gravadas</div><div class="value">${fmt(
+      dlq.total,
+      0,
+    )}</div></div>
+    <div class="card"><div class="label">Erros de XADD</div><div class="value">${fmt(
+      dlq.errors,
+      0,
+    )}</div></div>
+    ${workerLine}
+  </div>
+  <table>
+    <thead><tr><th>Tipo</th><th>Observados</th><th>Gravados</th></tr></thead>
+    <tbody>
+        ${kindRows}
+    </tbody>
+  </table>`;
+  }
+
   const generated = new Date().toISOString();
 
   return `<!doctype html>
@@ -148,6 +269,8 @@ function buildHtmlSummary(scenarioName, data) {
     <div class="card"><div class="label">Latência p99</div><div class="value">${fmt(p99, 2)} ms</div></div>
     <div class="card"><div class="label">Latência máx</div><div class="value">${fmt(max, 2)} ms</div></div>
   </div>
+
+  ${dlqSection}
 
   <h2>Thresholds</h2>
   <table>

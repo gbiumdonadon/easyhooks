@@ -59,6 +59,13 @@ services:
     environment:
       LOADTEST_API_BASE_URL: ${LOADTEST_API_BASE_URL:-http://app:8000}
       TENANT_POOL_FILE: /load_tests/.tenant_pool.json
+      # failure_tracking.js usa estas para gravar falhas no stream loadtest:dlq.
+      # Os outros cenários ignoram silenciosamente (lib/dlq.js só conecta on demand).
+      LOADTEST_REDIS_URL: ${LOADTEST_REDIS_URL:-redis://redis:6379/0}
+      LOADTEST_DLQ_STREAM: ${LOADTEST_DLQ_STREAM:-loadtest:dlq}
+      LOADTEST_DLQ_MAX_LEN: ${LOADTEST_DLQ_MAX_LEN:-50000}
+      LOADTEST_FAILURE_RATIO: ${LOADTEST_FAILURE_RATIO:-0.10}
+      LOADTEST_WORKER_DLQ_STREAM: ${LOADTEST_WORKER_DLQ_STREAM:-events:failed}
     depends_on:
       loadtest-init:
         condition: service_completed_successfully
