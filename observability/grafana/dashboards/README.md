@@ -13,7 +13,7 @@ System-wide health view:
 - Worker error rates
 
 ### 2. Redis Streams Metrics (`02-streams.json`)
-The replacement for the old Kafka dashboard, focused on the work queue:
+Work-queue metrics for Redis Streams:
 - **Worker Backlog** — `redis_stream_group_pending{stream="events:in",group="webhook-workers"}` (single most important metric: how many entries the worker has not acked yet).
 - **Stream Throughput** — published vs consumed rate (`stream_publish_total` / `stream_consume_total`).
 - **Stream Length (XLEN)** — `redis_stream_length{stream="events:in"}` and `events:failed` (DLQ).

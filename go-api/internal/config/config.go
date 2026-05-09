@@ -57,7 +57,7 @@ type Config struct {
 	// --- Worker retry / idempotency ---
 	WorkerMaxRetries    int `env:"WORKER_MAX_RETRIES" envDefault:"3"`
 	WorkerBackoffBaseMs int `env:"WORKER_BACKOFF_BASE_MS" envDefault:"100"`
-	IdempotencyTTL      int `env:"IDEMPOTENCY_TTL_SECONDS" envDefault:"86400"`
+	IdempotencyTTL      int `env:"IDEMPOTENCY_TTL_SECONDS" envDefault:"3600"`
 
 	// --- Per-tenant fan-out streams (consumed by WS handler) ---
 	TenantEventsStreamPrefix string `env:"TENANT_EVENTS_STREAM_PREFIX" envDefault:"stream:tenant:"`

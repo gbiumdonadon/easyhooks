@@ -69,7 +69,7 @@ pending nem é reentregue ao mesmo consumer group.
 
 ## Como inspecionar a DLQ
 
-Tudo é feito via `redis-cli` — não há mais broker Kafka no caminho:
+Inspecione a DLQ direto no Redis com `redis-cli` (o pipeline usa apenas Redis Streams):
 
 ```bash
 # Quantas entradas existem?

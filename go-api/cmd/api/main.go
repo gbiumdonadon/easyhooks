@@ -69,6 +69,10 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Check Redis memory at startup: logs current usage and warns if maxmemory
+	// is unconfigured or already under pressure before traffic arrives.
+	bootCheckRedisMemory(ctx, rdb)
+
 	// Defensive one-shot trim at boot to enforce the configured memory cap on
 	// streams that may have grown unbounded in older deployments. The load
 	// shedder no longer depends on this (it reads consumer-group backlog,
@@ -91,6 +95,7 @@ func main() {
 		cfg.QueueDepthLowWaterPct,
 	)
 	go queueMonitor.Run(ctx, time.Duration(cfg.QueueDepthPollMs)*time.Millisecond)
+	go runMemoryMonitor(ctx, rdb)
 
 	// Router
 	r := chi.NewRouter()
@@ -151,6 +156,73 @@ func main() {
 		slog.Error("Graceful shutdown failed", "error", err)
 	}
 	slog.Info("API server stopped")
+}
+
+// bootCheckRedisMemory reads INFO memory at startup and logs a warning when
+// maxmemory is unconfigured (policy noeviction risks OOM) or when current
+// usage is already above 70% of the configured limit. Failures are non-fatal.
+func bootCheckRedisMemory(ctx context.Context, rdb *goredis.Client) {
+	info, err := appredis.InfoMemory(ctx, rdb)
+	if err != nil {
+		slog.Warn("Redis memory check failed at boot (continuing)", "error", err)
+		return
+	}
+	attrs := []any{
+		"used_bytes", info.UsedMemory,
+		"max_bytes", info.MaxMemory,
+		"policy", info.Policy,
+	}
+	if info.MaxMemory == 0 {
+		slog.Warn("Redis maxmemory is not configured — set --maxmemory to prevent OOM", attrs...)
+		return
+	}
+	usedPct := info.UsedMemory * 100 / info.MaxMemory
+	attrs = append(attrs, "used_pct", usedPct)
+	if usedPct > 70 {
+		slog.Warn("Redis memory already above 70% at startup", attrs...)
+	} else {
+		slog.Info("Redis memory OK at startup", attrs...)
+	}
+}
+
+// runMemoryMonitor polls Redis INFO memory every 30 s and logs usage. It emits
+// a WARN when used_memory exceeds 80% of the configured maxmemory limit so
+// operators have visibility before the eviction policy kicks in at 100%.
+func runMemoryMonitor(ctx context.Context, rdb *goredis.Client) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			info, err := appredis.InfoMemory(ctx, rdb)
+			if err != nil {
+				slog.Warn("Redis memory monitor: INFO failed", "error", err)
+				continue
+			}
+			if info.MaxMemory == 0 {
+				slog.Info("Redis memory", "used_bytes", info.UsedMemory, "max_bytes", "unlimited", "policy", info.Policy)
+				continue
+			}
+			usedPct := info.UsedMemory * 100 / info.MaxMemory
+			if usedPct > 80 {
+				slog.Warn("Redis memory pressure",
+					"used_bytes", info.UsedMemory,
+					"max_bytes", info.MaxMemory,
+					"used_pct", usedPct,
+					"policy", info.Policy,
+				)
+			} else {
+				slog.Info("Redis memory",
+					"used_bytes", info.UsedMemory,
+					"max_bytes", info.MaxMemory,
+					"used_pct", usedPct,
+					"policy", info.Policy,
+				)
+			}
+		}
+	}
 }
 
 // bootTrimStream runs the defensive XTRIM described in main(). Failures are

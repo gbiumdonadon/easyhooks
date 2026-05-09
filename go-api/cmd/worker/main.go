@@ -9,6 +9,8 @@ import (
 	"runtime/debug"
 	"syscall"
 
+	goredis "github.com/redis/go-redis/v9"
+
 	"github.com/easyhooks/easyhooks/internal/config"
 	"github.com/easyhooks/easyhooks/internal/observability"
 	appredis "github.com/easyhooks/easyhooks/internal/redis"
@@ -46,6 +48,10 @@ func main() {
 		os.Exit(1)
 	}
 	defer rdb.Close()
+
+	// Check Redis memory at startup (same as API): warns if unconfigured or
+	// already under pressure before the worker begins consuming messages.
+	bootCheckRedisMemory(ctx, rdb)
 
 	// The API also calls EnsureGroup on startup; doing it here too lets the
 	// worker run standalone (e.g. tests, isolated deployments).
@@ -102,6 +108,32 @@ func main() {
 	}
 
 	slog.Info("Worker stopped")
+}
+
+// bootCheckRedisMemory mirrors cmd/api: logs Redis memory state at startup and
+// warns if maxmemory is unconfigured or usage is already above 70%.
+func bootCheckRedisMemory(ctx context.Context, rdb *goredis.Client) {
+	info, err := appredis.InfoMemory(ctx, rdb)
+	if err != nil {
+		slog.Warn("Redis memory check failed at boot (continuing)", "error", err)
+		return
+	}
+	attrs := []any{
+		"used_bytes", info.UsedMemory,
+		"max_bytes", info.MaxMemory,
+		"policy", info.Policy,
+	}
+	if info.MaxMemory == 0 {
+		slog.Warn("Redis maxmemory is not configured — set --maxmemory to prevent OOM", attrs...)
+		return
+	}
+	usedPct := info.UsedMemory * 100 / info.MaxMemory
+	attrs = append(attrs, "used_pct", usedPct)
+	if usedPct > 70 {
+		slog.Warn("Redis memory already above 70% at startup", attrs...)
+	} else {
+		slog.Info("Redis memory OK at startup", attrs...)
+	}
 }
 
 // applyMemoryLimit mirrors cmd/api: honour an explicit GOMEMLIMIT, otherwise

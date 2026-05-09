@@ -43,11 +43,11 @@ import { buildHandleSummary } from '../lib/summary.js';
 
 const tenants = loadTenantSharedArray();
 
-const wsVUs = Number(__ENV.K6_WS_VUS || 10);
-const pubVUs = Number(__ENV.K6_PUB_VUS || 10);
+const wsVUs = Number(__ENV.K6_WS_VUS || 20);
+const pubVUs = Number(__ENV.K6_PUB_VUS || 20);
 const wsWarmup = __ENV.K6_WS_WARMUP || '15s';
-const pubDuration = __ENV.K6_PUB_DURATION || '2h';
-const totalDuration = __ENV.K6_TOTAL_DURATION || '2h';
+const pubDuration = __ENV.K6_PUB_DURATION || '8h';
+const totalDuration = __ENV.K6_TOTAL_DURATION || '8h';
 const wsLifetimeMs = Number(__ENV.K6_WS_LIFETIME_MS || 160000);
 
 // Quantos tenants efetivamente cobertos pelos WS — também usado pelo publisher
@@ -206,7 +206,7 @@ export function wsConsumer() {
   }
 }
 
-const baseSummary = buildHandleSummary('combined_baseline_ws');
+const baseSummary = buildHandleSummary('e2e');
 
 function metricVal(data, name, key) {
   const m = data && data.metrics && data.metrics[name];

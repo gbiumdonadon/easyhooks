@@ -7,9 +7,13 @@
 [🇺🇸 English version](README.md)
 
 Plataforma multi-tenant de **ingestão, processamento idempotente e distribuição
-em tempo real** de webhooks. **Go (Chi) + Redis only** — sem Kafka, sem
-PostgreSQL. Redis Streams compõem tanto a fila de trabalho (`events:in` /
+em tempo real** de webhooks. **Go (Chi) + Redis only**. Redis Streams compõem tanto a fila de trabalho (`events:in` /
 `events:failed`) quanto os streams por tenant consumidos pelo WebSocket.
+
+## Principal objetivo
+- O hardware é o limite
+- Tentar garantir o máximo de entrega
+- Sem logs de sucesso (2xx), apenas de falha são necessários.
 
 > **Documentação completa do produto:** site Docusaurus em
 > <http://localhost:3001> (sobe via `docker compose up -d`).
