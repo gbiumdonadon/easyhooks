@@ -118,7 +118,7 @@ System-wide:
 
 ### EasyHooks Redis Streams Metrics
 
-Replaces the old "Kafka Metrics" view. Panels:
+Redis Streams work-queue view (backlog, throughput, physical stream length). Panels:
 
 - **Worker Backlog (XPENDING)** — `redis_stream_group_pending`
 - **Stream Throughput** — `stream_publish_total` vs `stream_consume_total`

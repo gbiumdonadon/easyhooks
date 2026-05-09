@@ -7,11 +7,17 @@
 [🇧🇷 Portuguese version](README.pt-br.md)
 
 Multi-tenant platform for **ingestion, idempotent processing, and real-time
-distribution** of webhooks. **Go (Chi) + Redis only** — no Kafka, no PostgreSQL.
-Redis Streams power both the work queue (`events:in` / `events:failed`) and the
-per-tenant fan-out streams consumed by the WebSocket layer.
+distribution** of webhooks. **Go (Chi) + Redis only**. Redis Streams power both
+the work queue (`events:in` / `events:failed`) and the per-tenant fan-out
+streams consumed by the WebSocket layer.
 
-> **Full product documentation:** see the Docusaurus site at
+## Main goals
+
+- Hardware is the ceiling.
+- Aim for the highest practical delivery rate.
+- No success logs (2xx); failure logs are enough.
+
+> **Full product documentation:** Docusaurus site at
 > <http://localhost:3001> (starts via `docker compose up -d`).
 
 ---
@@ -27,7 +33,7 @@ per-tenant fan-out streams consumed by the WebSocket layer.
 - [Capacity planning](#capacity-planning)
 - [Observability](#observability)
 - [Testing](#testing)
-- [Load Testing](#load-testing)
+- [Load testing](#load-testing)
 - [Documentation](#documentation)
 - [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
@@ -62,11 +68,11 @@ flowchart LR
   `events:failed`.
 - **`redis`** — Sole datastore. Holds the bootstrap admin token hash, all tenant
   credentials, idempotency locks, the work queue and the per-tenant streams.
-  Persistence is on (AOF every second + RDB snapshots) so data survives restarts.
+  Active persistence (AOF every second + RDB).
 - **`docs`** — Docusaurus site (Nginx serving the static build).
 
 The optional observability stack (Prometheus, Grafana, Jaeger, redis-exporter)
-lives in a separate compose file — opt in only when you need it.
+runs in a separate compose file — start it only when you need it.
 
 ---
 
@@ -76,10 +82,10 @@ lives in a separate compose file — opt in only when you need it.
 | --- | --- |
 | Language | Go 1.26 (toolchain auto) |
 | Web framework | Chi (`go-chi/chi`) + `net/http` stdlib |
-| Datastore | Redis 7 (`go-redis/v9`) — credentials, work queue, per-tenant streams |
+| Datastore | Redis 7 (`go-redis/v9`) — credentials, queue, and streams |
 | Work queue | Redis Streams (`events:in`, `events:failed`, consumer group `webhook-workers`) |
-| Observability | Prometheus + Grafana + Jaeger (OpenTelemetry) — optional, separate compose file |
-| Load Testing | Grafana k6 (HTTP + WebSocket scenarios under `load_tests/k6/`) |
+| Observability | Prometheus + Grafana + Jaeger (OpenTelemetry) — optional |
+| Load testing | Grafana k6 (`load_tests/k6/`, HTTP + WebSocket) |
 | Tests | `testing` stdlib + `testify` + `miniredis` |
 | Docs | Docusaurus 3 (Node 20 build → Nginx Alpine runtime) |
 | Infra | Docker Compose |
@@ -140,7 +146,7 @@ This brings up Prometheus, Grafana, Jaeger and `redis-exporter` (with Redis
 Streams metrics enabled), all attached to the same network so they can scrape
 `app:8000` and `redis:6379`.
 
-### 4. Verify everything is running
+### 4. Verify
 
 - API: <http://localhost:8000/health>.
 - Documentation: <http://localhost:3001>.
@@ -185,21 +191,18 @@ curl -i -X POST "http://localhost:8000/v1/webhooks/$TENANT_ID" \
 
 Expected response: `HTTP/1.1 202 Accepted`.
 
-### 7. Watch the worker processing
+### 7. Watch the worker
 
 ```bash
 docker compose logs -f worker
 ```
 
-You'll see something like:
+Typical output:
 
 ```
 INFO  Worker started stream=events:in dlq_stream=events:failed group=webhook-workers ...
 INFO  Published event to stream tenant_id=f1a2b3c4-... stream_id=1700000000000-0
 ```
-
-For details (HMAC, WebSocket, DLQ, examples in other languages), see the
-documentation at <http://localhost:3001>.
 
 ---
 
@@ -212,9 +215,9 @@ documentation at <http://localhost:3001>.
 | Metrics | <http://localhost:8000/metrics> | 8000 | Prometheus metrics |
 | Documentation | <http://localhost:3001> | 80 | Docusaurus site (Nginx) |
 | Redis | localhost:6379 | 6379 | no auth (dev) |
-| **Grafana** *(opt-in)* | <http://localhost:3000> | 3000 | Dashboards (creds from `.env`) |
-| **Prometheus** *(opt-in)* | <http://localhost:9090> | 9090 | Metrics & queries |
-| **Jaeger** *(opt-in)* | <http://localhost:16686> | 16686 | Distributed tracing |
+| **Grafana** *(optional)* | <http://localhost:3000> | 3000 | Dashboards (creds from `.env`) |
+| **Prometheus** *(optional)* | <http://localhost:9090> | 9090 | Metrics & queries |
+| **Jaeger** *(optional)* | <http://localhost:16686> | 16686 | Distributed tracing |
 
 ---
 
@@ -263,15 +266,15 @@ to `.env` and customize.
 
 > **Production:** always set `ADMIN_SEED_TOKEN`, `APP_SECRET_KEY` (and
 > `GRAFANA_ADMIN_PASSWORD` when enabling monitoring) via a secret manager.
-> Rotate before promoting. Adjust `TRACING_SAMPLE_RATE` to 0.1–0.2.
+> Reduce `TRACING_SAMPLE_RATE` to 0.1–0.2.
 
 ---
 
 ## Capacity planning
 
-EasyHooks ships three pre-tuned profiles that scale memory limits, Redis pool
-size, per-tenant stream caps, fanout buffers and ingestion backpressure
-together. Pick one based on the container memory budget you can give it.
+EasyHooks ships three pre-tuned profiles that jointly scale memory limits, Redis
+pool size, per-tenant stream caps, fan-out buffers and ingestion backpressure.
+Pick a profile based on the container memory you can dedicate.
 
 > **Behavioural guarantee.** EasyHooks prioritises server integrity. Under
 > extreme load it prefers to **reject new requests with HTTP 429** rather
@@ -322,17 +325,9 @@ script).
 
 ## Observability
 
-Bring up the optional stack with:
-
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
 ```
-
-### Quick access
-
-- **Grafana** — <http://localhost:3000> (creds from `.env`).
-- **Prometheus** — <http://localhost:9090>.
-- **Jaeger** — <http://localhost:16686>.
 
 ### Key metrics
 
@@ -342,11 +337,7 @@ docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
 redis_stream_group_pending{stream="events:in",group="webhook-workers"}
 ```
 
-- **Healthy**: < 100 pending entries.
-- **Warning**: 100–500.
-- **Critical**: > 1000 (worker is falling behind — scale horizontally).
-
-#### 2. Stream length (physical size on Redis)
+#### 2. Physical stream length
 
 `redis_stream_length` is the physical `XLEN` exposed by redis-exporter — useful as a memory signal, but **not** the queue depth seen by the load shedder. For the actual shedder signal use `ingest_queue_depth` (consumer-group `lag + pending`).
 
@@ -362,7 +353,7 @@ ingest_queue_depth{stream="events:in"}
 rate(webhook_dlq_total[5m]) / rate(stream_consume_total[5m])
 ```
 
-#### 4. Processing duration p95
+#### 4. p95 latency
 
 ```promql
 histogram_quantile(0.95, rate(webhook_processing_duration_seconds_bucket[5m]))
@@ -370,18 +361,18 @@ histogram_quantile(0.95, rate(webhook_processing_duration_seconds_bucket[5m]))
 
 ### Dashboards
 
-Three dashboards are auto-provisioned:
+Provisioned automatically:
 
-1. **EasyHooks Overview** — RPS, p95 latency, WS connections, DLQ ratio.
-2. **EasyHooks Redis Streams Metrics** — XPENDING, throughput, XLEN.
-3. **EasyHooks Load Test** — request rate, latency percentiles, stream pending
-   backlog while a k6 run is in progress.
+1. **EasyHooks Overview** — RPS, p95, WS connections, DLQ ratio.
+2. **EasyHooks Redis Streams Metrics** — XPENDING, throughput and XLEN.
+3. **EasyHooks Load Test** — request rate, latency and stream backlog during
+   k6 runs.
 
-### Distributed tracing
+### Tracing
 
-A complete trace covers `webhook.ingest` → `webhook.publish_stream` →
-`webhook.process` (worker) → `webhook.business_handler` → `webhook.dispatch_to_dlq`
-(when applicable) → `websocket.send`.
+Typical spans: `webhook.ingest` → `webhook.publish_stream` → `webhook.process`
+(worker) → `webhook.business_handler` → `webhook.dispatch_to_dlq` (when
+applicable) → `websocket.send`.
 
 ---
 
@@ -391,18 +382,13 @@ A complete trace covers `webhook.ingest` → `webhook.publish_stream` →
 cd go-api
 go test ./...
 go test -race ./...
-go test -cover ./...
 ```
 
-The unit suite uses `miniredis`, so it does not require a live Redis instance.
+The suite uses `miniredis`; it does not require a live Redis instance.
 
 ---
 
-## Load Testing
-
-EasyHooks ships with a Grafana k6 suite under `load_tests/k6/`.
-
-### From inside Docker (recommended)
+## Load testing
 
 ```bash
 docker compose up -d
@@ -410,21 +396,16 @@ docker compose -f load_tests/docker-compose.loadtest.yml run --rm k6 \
   run k6/scenarios/baseline.js
 ```
 
-### Scenarios
-
 | Scenario | Script | Purpose |
 | --- | --- | --- |
-| Baseline | `k6/scenarios/baseline.js` | Normal-load ramp |
+| Baseline | `k6/scenarios/baseline.js` | Moderate load |
 | Throughput | `k6/scenarios/throughput.js` | Higher sustained RPS |
-| WebSocket scale | `k6/scenarios/websocket_scale.js` | Many concurrent WS clients |
-| Multi-tenant | `k6/scenarios/multi_tenant.js` | Spread load across the tenant pool |
-| Stress | `k6/scenarios/stress.js` | Aggressive ramp toward saturation |
+| WebSocket scale | `k6/scenarios/websocket_scale.js` | Many WS connections |
+| Multi-tenant | `k6/scenarios/multi_tenant.js` | Spread across tenant pool |
+| Stress | `k6/scenarios/stress.js` | Saturation |
 
-While a test runs, watch the **EasyHooks Load Test** Grafana dashboard
-(`Stream Pending Backlog` panel) — if it grows unbounded, the worker is
-saturating.
-
-See `load_tests/README.md` for the full guide.
+Watch the **Stream Pending Backlog** panel on the EasyHooks Load Test dashboard
+during runs — if it keeps growing, the worker is saturated.
 
 ---
 
@@ -432,16 +413,15 @@ See `load_tests/README.md` for the full guide.
 
 ```bash
 docker compose up -d docs
-# Open http://localhost:3001
+# http://localhost:3001
 ```
 
-Documentation files live in `docs/docs/` (Markdown with Docusaurus frontmatter).
-For hot reload during edits:
+Edit with hot reload:
 
 ```bash
 cd docs
-npm install        # first time only
-npm start          # http://localhost:3000
+npm install
+npm start
 ```
 
 ---

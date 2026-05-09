@@ -33,6 +33,10 @@ services:
       - "everysec"
       - "--save"
       - "60 1000"
+      - "--maxmemory"
+      - "85mb"
+      - "--maxmemory-policy"
+      - "volatile-lru"
     volumes:
       - redis-data:/data
     mem_limit: ${EASYHOOKS_MEM_LIMIT:-100m}

@@ -58,7 +58,7 @@ observability/
 │   └── dashboards/
 │       ├── README.md
 │       ├── 01-overview.json    # System-wide overview
-│       ├── 02-streams.json     # Redis Streams (replaces the old Kafka view)
+│       ├── 02-streams.json     # Redis Streams work queue & DLQ
 │       └── 03-loadtest.json    # Load testing dashboard
 └── README.md                   # This file
 ```

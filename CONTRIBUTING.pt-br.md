@@ -7,7 +7,7 @@ Este projeto visa ser uma plataforma multi-tenant de alto desempenho para
 **ingestão, processamento idempotente e distribuição em tempo real** de
 webhooks — e a sua ajuda é fundamental para mantê-lo afiado.
 
-Como performance e confiabilidade são objetivos centrais, seguimos algumas
+Como performance, estabilidade e entrega são objetivos centrais, seguimos algumas
 diretrizes para manter o código limpo, eficiente e previsível.
 
 ---
@@ -54,9 +54,8 @@ O EasyHooks precisa ser resiliente. Contribuições são bem-vindas em:
 - **Casos de borda** — testes unitários (`go-api/**/*_test.go`) para
   payloads malformados, HMAC inválido, corridas de idempotência,
   instabilidades de rede e caminhos de DLQ.
-- **Benchmarks de capacidade** — extender o
-  `load_tests/scripts/run_capacity_benchmark.ps1` ou adicionar scripts
-  shell equivalentes.
+- **Benchmarks de capacidade** — estender o
+  `load_tests/k6/scenarios/e2e.js` ou acrescentar outros cenários realistas.
 
 ### 3. Documentação e exemplos
 
@@ -124,7 +123,7 @@ Veja `load_tests/README.md` para o guia completo de testes de carga.
 
 Ao abrir um PR, por favor:
 
-- **Mantenha-o atômico.** Um PR deve resolver apenas um problema ou
+- **Um problema por vez.** Um PR deve resolver apenas um problema ou
   adicionar uma única funcionalidade. Quebre refatorações grandes em
   pedaços revisáveis.
 - **Escreva uma descrição clara.** Explique o **porquê** da mudança, não

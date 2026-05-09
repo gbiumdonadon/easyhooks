@@ -7,8 +7,8 @@ This project aims to be a high-performance, multi-tenant platform for webhook
 ingestion, idempotent processing and real-time distribution — and your help
 keeps it sharp.
 
-Because performance and reliability are first-class goals, we follow a few
-guidelines to keep the codebase clean, fast and predictable.
+Because performance, stability and delivery are first-class goals, we follow a few
+guidelines to keep the codebase clean, efficient and predictable.
 
 ---
 
@@ -48,8 +48,8 @@ EasyHooks must be resilient. Contributions are welcome in:
   becomes slow, drops connections, or recovers from a restart.
 - **Edge cases** — unit tests (`go-api/**/*_test.go`) for malformed payloads,
   HMAC mismatches, idempotency races, network instability and DLQ paths.
-- **Capacity benchmarks** — extending `load_tests/scripts/run_capacity_benchmark.ps1`
-  or adding equivalent shell scripts.
+- **Capacity benchmarks** — extending `load_tests/k6/scenarios/e2e.js` or adding
+  other realistic scenarios as needed.
 
 ### 3. Documentation and examples
 
